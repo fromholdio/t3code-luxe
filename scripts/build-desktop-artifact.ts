@@ -67,6 +67,9 @@ const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
+// "passkeys" is upstream's signing with T3 Connect capabilities; "developer-id" signs without them.
+const MacSigningMode = Schema.Literals(["passkeys", "developer-id"]);
+const DesktopUpdatePolicy = Schema.Literals(["default", "forward-only"]);
 
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -188,6 +191,9 @@ interface BuildCliInput {
   readonly mockUpdates: Option.Option<boolean>;
   readonly mockUpdateServerPort: Option.Option<number>;
   readonly wslRuntime: Option.Option<string>;
+  readonly macSigning?: Option.Option<typeof MacSigningMode.Type>;
+  readonly updatePolicy?: Option.Option<typeof DesktopUpdatePolicy.Type>;
+  readonly prepackaged?: Option.Option<string>;
 }
 
 function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Type | undefined {
@@ -672,6 +678,58 @@ export class MacProvisioningProfileNotFoundError extends Schema.TaggedError<MacP
   }
 }
 
+export class MacDeveloperIdSigningConfigurationError extends Schema.TaggedError<MacDeveloperIdSigningConfigurationError>()(
+  "MacDeveloperIdSigningConfigurationError",
+  {
+    reason: Schema.Literals(["not-mac", "requires-signed", "missing-identity"]),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "not-mac":
+        return "Developer ID signing applies only to macOS builds.";
+      case "requires-signed":
+        return "Developer ID signing requires --signed.";
+      case "missing-identity":
+        return "Developer ID signing requires CSC_NAME to name the signing identity, for example its certificate SHA-1.";
+    }
+  }
+}
+
+export class PrepackagedMacAppError extends Schema.TaggedError<PrepackagedMacAppError>()(
+  "PrepackagedMacAppError",
+  {
+    reason: Schema.Literals(["not-mac", "signed", "unreadable-version", "version-mismatch"]),
+    appPath: Schema.String,
+    expectedVersion: Schema.optional(Schema.String),
+    actualVersion: Schema.optional(Schema.String),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "not-mac":
+        return "Packaging a prepackaged app is supported only for macOS.";
+      case "signed":
+        return "A prepackaged app is packaged as it is; omit --signed.";
+      case "unreadable-version":
+        return `Cannot read CFBundleShortVersionString from ${this.appPath}.`;
+      case "version-mismatch":
+        return `Prepackaged app ${this.appPath} is version ${this.actualVersion}, not ${this.expectedVersion}.`;
+    }
+  }
+}
+
+export class DesktopBuildOutputExistsError extends Schema.TaggedError<DesktopBuildOutputExistsError>()(
+  "DesktopBuildOutputExistsError",
+  {
+    outputPath: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Refusing to overwrite existing build output: ${this.outputPath}`;
+  }
+}
+
 export class DesktopBuildDistDirectoryMissingError extends Schema.TaggedError<DesktopBuildDistDirectoryMissingError>()(
   "DesktopBuildDistDirectoryMissingError",
   {
@@ -950,6 +1008,9 @@ interface ResolvedBuildOptions {
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
   readonly wslRuntime: string | undefined;
+  readonly macSigning: typeof MacSigningMode.Type;
+  readonly updatePolicy: typeof DesktopUpdatePolicy.Type;
+  readonly prepackaged: string | undefined;
 }
 
 interface StagePackageJson {
@@ -958,6 +1019,8 @@ interface StagePackageJson {
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
   readonly t3codeWebAuthn?: MacWebAuthnEntitlements;
+  // Read by apps/desktop/src/updates/DesktopUpdates.ts.
+  readonly t3codeUpdatePolicy?: "forward-only";
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -1341,6 +1404,22 @@ export function resolveMacWebAuthnEntitlements(
   };
 }
 
+// Hardened-runtime exceptions shared by every signed macOS build.
+const MAC_RUNTIME_ENTITLEMENTS = `    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- The hardened runtime denies camera and microphone to the app and every
+         child process, with no prompt, unless the app claims these. Terminals
+         and coding agents inherit the app's TCC identity, so without these a
+         command like ffmpeg or imagesnap gets silent access-denied. -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>`;
+
 export function renderMacPasskeyEntitlements(
   configuration: MacPasskeySigningConfiguration,
   webAuthn: MacWebAuthnEntitlements,
@@ -1373,20 +1452,19 @@ export function renderMacPasskeyEntitlements(
     <array>
 ${associatedDomains}
     </array>${keychainAccessGroups}${browserPasskeys}
-    <key>com.apple.security.cs.allow-jit</key>
-    <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-    <!-- The hardened runtime denies camera and microphone to the app and every
-         child process, with no prompt, unless the app claims these. Terminals
-         and coding agents inherit the app's TCC identity, so without these a
-         command like ffmpeg or imagesnap gets silent access-denied. -->
-    <key>com.apple.security.device.camera</key>
-    <true/>
-    <key>com.apple.security.device.audio-input</key>
-    <true/>
+${MAC_RUNTIME_ENTITLEMENTS}
+  </dict>
+</plist>
+`;
+}
+
+/** Developer ID signing without a provisioning profile; restricted capabilities stay off. */
+export function renderMacDeveloperIdEntitlements(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+${MAC_RUNTIME_ENTITLEMENTS}
   </dict>
 </plist>
 `;
@@ -1643,6 +1721,13 @@ const BuildEnvConfig = Config.all({
   mockUpdates: Config.Boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
   mockUpdateServerPort: Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
   wslRuntime: Config.String("T3CODE_DESKTOP_WSL_RUNTIME").pipe(Config.option),
+  macSigning: Config.schema(MacSigningMode, "T3CODE_DESKTOP_MAC_SIGNING").pipe(Config.option),
+  updatePolicy: Config.schema(DesktopUpdatePolicy, "T3CODE_DESKTOP_UPDATE_POLICY").pipe(
+    Config.option,
+  ),
+  prepackaged: Config.String("T3CODE_DESKTOP_PREPACKAGED").pipe(Config.option),
+  // electron-builder's own identity selector, required so Developer ID builds never auto-discover.
+  signingIdentity: Config.String("CSC_NAME").pipe(Config.option),
 });
 
 const MockUpdateServerPortSchema = Schema.NumberFromString.check(
@@ -1736,6 +1821,38 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const wslRuntime =
     Option.getOrUndefined(input.wslRuntime) ?? Option.getOrUndefined(env.wslRuntime);
 
+  const macSigning = mergeOptions(input.macSigning ?? Option.none(), env.macSigning, "passkeys");
+  if (macSigning === "developer-id") {
+    if (platform !== "mac") {
+      return yield* new MacDeveloperIdSigningConfigurationError({ reason: "not-mac" });
+    }
+    if (!signed) {
+      return yield* new MacDeveloperIdSigningConfigurationError({ reason: "requires-signed" });
+    }
+    if (!Option.getOrUndefined(env.signingIdentity)?.trim()) {
+      return yield* new MacDeveloperIdSigningConfigurationError({ reason: "missing-identity" });
+    }
+  }
+  const updatePolicy = mergeOptions(
+    input.updatePolicy ?? Option.none(),
+    env.updatePolicy,
+    "default",
+  );
+  const configuredPrepackaged = mergeOptions(
+    input.prepackaged ?? Option.none(),
+    env.prepackaged,
+    "",
+  );
+  const prepackaged = configuredPrepackaged
+    ? path.resolve(repoRoot, configuredPrepackaged)
+    : undefined;
+  if (prepackaged !== undefined && platform !== "mac") {
+    return yield* new PrepackagedMacAppError({ reason: "not-mac", appPath: prepackaged });
+  }
+  if (prepackaged !== undefined && signed) {
+    return yield* new PrepackagedMacAppError({ reason: "signed", appPath: prepackaged });
+  }
+
   return {
     platform,
     target,
@@ -1749,6 +1866,9 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     mockUpdates,
     mockUpdateServerPort,
     wslRuntime,
+    macSigning,
+    updatePolicy,
+    prepackaged,
   } satisfies ResolvedBuildOptions;
 });
 
@@ -2761,11 +2881,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   signed: boolean,
   mockUpdates: boolean,
   mockUpdateServerPort: number | undefined,
-  macPasskeySigning:
+  macSigning:
     | {
+        readonly mode: "passkeys";
         readonly entitlementsPath: string;
         readonly provisioningProfilePath: string;
       }
+    | { readonly mode: "developer-id"; readonly entitlementsPath: string }
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
@@ -2856,13 +2978,20 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         },
       ],
       ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
-      ...(macPasskeySigning
+      ...(macSigning?.mode === "passkeys"
         ? {
-            entitlements: macPasskeySigning.entitlementsPath,
-            provisioningProfile: macPasskeySigning.provisioningProfilePath,
+            entitlements: macSigning.entitlementsPath,
+            provisioningProfile: macSigning.provisioningProfilePath,
           }
         : {}),
+      // Notarization runs outside electron-builder so the request is not tied to this process.
+      ...(macSigning?.mode === "developer-id"
+        ? { entitlements: macSigning.entitlementsPath, notarize: false }
+        : {}),
     };
+    if (macSigning?.mode === "developer-id") {
+      buildConfig.forceCodeSigning = true;
+    }
   }
 
   if (platform === "mac" && target === "dmg") {
@@ -3521,6 +3650,203 @@ export const validateWindowsPackagedPayload = Effect.fn(
   return { packagedAppDir, fileCount, unpackedFiles } as const;
 });
 
+// electron-builder notarizes a signed app itself when these are set (app-builder-lib 26.16.1).
+const IMPLICIT_NOTARIZATION_ENV = [
+  "APPLE_ID",
+  "APPLE_APP_SPECIFIC_PASSWORD",
+  "APPLE_TEAM_ID",
+  "APPLE_API_KEY",
+  "APPLE_API_KEY_ID",
+  "APPLE_API_ISSUER",
+  "APPLE_KEYCHAIN_PROFILE",
+  "APPLE_KEYCHAIN",
+] as const;
+
+function deleteImplicitNotarizationEnv(env: NodeJS.ProcessEnv): void {
+  for (const key of IMPLICIT_NOTARIZATION_ENV) {
+    delete env[key];
+  }
+}
+
+// ditto keeps the bundle's symlinks, extended attributes and code signatures intact.
+const copyMacAppBundles = Effect.fn("copyMacAppBundles")(function* (
+  stageDistDir: string,
+  outputDir: string,
+  verbose: boolean,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const copied: string[] = [];
+  for (const entry of yield* fs.readDirectory(stageDistDir)) {
+    const appParent = path.join(stageDistDir, entry);
+    if (!entry.startsWith("mac") || (yield* fs.stat(appParent)).type !== "Directory") continue;
+    for (const name of yield* fs.readDirectory(appParent)) {
+      if (!name.endsWith(".app")) continue;
+      const to = path.join(outputDir, name);
+      if (yield* fs.exists(to)) {
+        return yield* new DesktopBuildOutputExistsError({ outputPath: to });
+      }
+      yield* runCommand(ChildProcess.make("ditto", [path.join(appParent, name), to]), {
+        label: `ditto ${name}`,
+        verbose,
+      });
+      copied.push(to);
+    }
+  }
+  return copied;
+});
+
+const MacInfoPlistVersion = Schema.Struct({ CFBundleShortVersionString: Schema.String });
+const isMacInfoPlistVersion = Schema.is(MacInfoPlistVersion);
+
+export const readMacAppVersion = Effect.fn("readMacAppVersion")(function* (appPath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const raw = yield* fs
+    .readFileString(path.join(appPath, "Contents", "Info.plist"))
+    .pipe(Effect.option);
+  return Option.flatMap(raw, (xml) => {
+    try {
+      const plist: unknown = Plist.parse(xml);
+      return isMacInfoPlistVersion(plist)
+        ? Option.some(plist.CFBundleShortVersionString)
+        : Option.none();
+    } catch {
+      return Option.none();
+    }
+  });
+});
+
+// Packages an app signed by an earlier `--target dir` build, after notarization and stapling.
+// electron-builder skips packing and signing for prepackaged apps, so the stapled bytes ship.
+const packagePrepackagedMacApp = Effect.fn("packagePrepackagedMacApp")(function* (
+  options: ResolvedBuildOptions,
+  appPath: string,
+) {
+  const repoRoot = yield* RepoRoot;
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const appVersion = options.version ?? serverPackageJson.version;
+  const actualVersion = yield* readMacAppVersion(appPath);
+  if (Option.isNone(actualVersion)) {
+    return yield* new PrepackagedMacAppError({ reason: "unreadable-version", appPath });
+  }
+  // The update manifest takes its version from the project, not from the app.
+  if (actualVersion.value !== appVersion) {
+    return yield* new PrepackagedMacAppError({
+      reason: "version-mismatch",
+      appPath,
+      expectedVersion: appVersion,
+      actualVersion: actualVersion.value,
+    });
+  }
+
+  const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
+  const stageRoot = yield* mkdir({ prefix: "t3code-desktop-mac-prepackaged-" });
+  const stageAppDir = path.join(stageRoot, "app");
+  const stageResourcesDir = path.join(stageAppDir, "apps/desktop/resources");
+  const iconAssets = resolveDesktopBuildIconAssets(appVersion);
+  yield* fs.copy(path.join(repoRoot, "apps/desktop/resources"), stageResourcesDir);
+  yield* assertPlatformBuildResources(
+    "mac",
+    stageResourcesDir,
+    {
+      macIconPng: path.join(repoRoot, iconAssets.macIconPng),
+      linuxIconPng: path.join(repoRoot, iconAssets.linuxIconPng),
+      windowsIconIco: path.join(repoRoot, iconAssets.windowsIconIco),
+    },
+    options.verbose,
+  );
+  if (options.target === "dmg") {
+    yield* stageDesktopDmgBackground(
+      stageResourcesDir,
+      resolveDesktopUpdateChannel(appVersion),
+      options.verbose,
+    );
+  }
+  const stagePackageJson = yield* encodeJsonString({
+    name: "t3code",
+    version: appVersion,
+    private: true,
+    description: "T3 Code is an open-source desktop app for coding agents.",
+    author: "T3 Tools",
+    build: yield* createBuildConfig(
+      "mac",
+      options.target,
+      appVersion,
+      false,
+      options.mockUpdates,
+      options.mockUpdateServerPort,
+      undefined,
+      false,
+      options.arch,
+    ),
+    devDependencies: { electron: desktopPackageJson.dependencies.electron },
+  });
+  yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJson}\n`);
+
+  const buildEnv: NodeJS.ProcessEnv = { ...process.env };
+  buildEnv.npm_config_user_agent = resolvePackageManagerUserAgent(rootPackageJson.packageManager);
+  for (const [key, value] of Object.entries(buildEnv)) {
+    if (value === "") {
+      delete buildEnv[key];
+    }
+  }
+  buildEnv.CSC_IDENTITY_AUTO_DISCOVERY = "false";
+  delete buildEnv.CSC_LINK;
+  delete buildEnv.CSC_KEY_PASSWORD;
+  deleteImplicitNotarizationEnv(buildEnv);
+
+  yield* Effect.log(
+    `[desktop-artifact] Packaging prepackaged ${appPath} as mac/${options.target} (arch=${options.arch}, version=${appVersion})...`,
+  );
+  const builderArgs = [
+    "exec",
+    "--filter",
+    "@t3tools/desktop",
+    "--",
+    "electron-builder",
+    "--projectDir",
+    stageAppDir,
+    "--mac",
+    `--${options.arch}`,
+    "--prepackaged",
+    appPath,
+    "--publish",
+    "never",
+  ];
+  const builderCommand = yield* resolveSpawnCommand("vp", builderArgs, { env: buildEnv });
+  yield* runCommand(
+    ChildProcess.make(builderCommand.command, builderCommand.args, {
+      cwd: repoRoot,
+      env: buildEnv,
+      shell: builderCommand.shell,
+    }),
+    { label: `electron-builder --prepackaged ${appPath}`, verbose: options.verbose },
+  );
+
+  const stageDistDir = path.join(stageAppDir, "dist");
+  yield* fs.makeDirectory(options.outputDir, { recursive: true });
+  const copiedArtifacts: string[] = [];
+  for (const entry of yield* fs.readDirectory(stageDistDir)) {
+    const from = path.join(stageDistDir, entry);
+    if ((yield* fs.stat(from)).type !== "File") continue;
+    const to = path.join(options.outputDir, entry);
+    yield* fs.copyFile(from, to);
+    copiedArtifacts.push(to);
+  }
+  if (copiedArtifacts.length === 0) {
+    return yield* new DesktopBuildNoArtifactsProducedError({
+      distPath: stageDistDir,
+      platform: "mac",
+      arch: options.arch,
+    });
+  }
+  yield* Effect.log("[desktop-artifact] Done. Artifacts:").pipe(
+    Effect.annotateLogs({ artifacts: copiedArtifacts }),
+  );
+});
+
 const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(function* (
   options: ResolvedBuildOptions,
 ) {
@@ -3759,7 +4085,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
   const configuredMacPasskeySigning =
-    options.platform === "mac" && options.signed
+    options.platform === "mac" && options.signed && options.macSigning === "passkeys"
       ? yield* Effect.try({
           try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
@@ -3774,9 +4100,12 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         ),
       }
     : undefined;
-  const macEntitlementsPath = macPasskeySigning
-    ? path.join(stageAppDir, "entitlements.mac.plist")
-    : undefined;
+  const macDeveloperIdSigning =
+    options.platform === "mac" && options.signed && options.macSigning === "developer-id";
+  const macEntitlementsPath =
+    macPasskeySigning || macDeveloperIdSigning
+      ? path.join(stageAppDir, "entitlements.mac.plist")
+      : undefined;
   let macWebAuthn: MacWebAuthnEntitlements | undefined;
   if (macPasskeySigning && macEntitlementsPath) {
     if (!(yield* fs.exists(macPasskeySigning.provisioningProfilePath))) {
@@ -3795,6 +4124,11 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       macEntitlementsPath,
       renderMacPasskeyEntitlements(macPasskeySigning, macWebAuthn),
     );
+  }
+  if (macDeveloperIdSigning && macEntitlementsPath) {
+    macWebAuthn = { touchIdKeychainAccessGroup: undefined, browserPasskeys: false };
+    yield* Effect.log("[desktop-artifact] Developer ID signing: in-app browser passkeys disabled.");
+    yield* fs.writeFileString(macEntitlementsPath, renderMacDeveloperIdEntitlements());
   }
 
   const stageDependencies =
@@ -3822,6 +4156,9 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     t3codeCommitHash: commitHash,
     // Read by apps/desktop/src/preview/Passkeys.ts; must match the signed entitlements.
     ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
+    ...(options.updatePolicy === "forward-only"
+      ? { t3codeUpdatePolicy: "forward-only" as const }
+      : {}),
     private: true,
     packageManager: rootPackageJson.packageManager,
     description:
@@ -3839,10 +4176,13 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       options.mockUpdateServerPort,
       macPasskeySigning && macEntitlementsPath
         ? {
+            mode: "passkeys",
             entitlementsPath: macEntitlementsPath,
             provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
           }
-        : undefined,
+        : macDeveloperIdSigning && macEntitlementsPath
+          ? { mode: "developer-id", entitlementsPath: macEntitlementsPath }
+          : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
     ),
@@ -3946,6 +4286,9 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     delete buildEnv.APPLE_API_KEY_ID;
     delete buildEnv.APPLE_API_ISSUER;
   }
+  if (macDeveloperIdSigning) {
+    deleteImplicitNotarizationEnv(buildEnv);
+  }
 
   if (hostPlatform === "win32") {
     const python = yield* resolvePythonForNodeGyp();
@@ -4031,6 +4374,12 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     copiedArtifacts.push(to);
   }
 
+  if (options.platform === "mac" && options.target === "dir") {
+    copiedArtifacts.push(
+      ...(yield* copyMacAppBundles(stageDistDir, options.outputDir, options.verbose)),
+    );
+  }
+
   if (copiedArtifacts.length === 0) {
     return yield* new DesktopBuildNoArtifactsProducedError({
       distPath: stageDistDir,
@@ -4048,7 +4397,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   options: ResolvedBuildOptions,
 ) {
   const repoRoot = yield* RepoRoot;
-  return yield* withDesktopBuildLock(repoRoot, buildDesktopArtifactUnlocked(options));
+  return yield* options.prepackaged === undefined
+    ? withDesktopBuildLock(repoRoot, buildDesktopArtifactUnlocked(options))
+    : withDesktopBuildLock(repoRoot, packagePrepackagedMacApp(options, options.prepackaged));
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
@@ -4103,6 +4454,24 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   mockUpdateServerPort: Flag.Int("mock-update-server-port").pipe(
     Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
     Flag.withDescription("Mock update server port (env: T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT)."),
+    Flag.optional,
+  ),
+  macSigning: Flag.Literals("mac-signing", MacSigningMode.literals).pipe(
+    Flag.withDescription(
+      "macOS signing with --signed: passkeys (default) or developer-id, which needs no provisioning profile (env: T3CODE_DESKTOP_MAC_SIGNING).",
+    ),
+    Flag.optional,
+  ),
+  updatePolicy: Flag.Literals("update-policy", DesktopUpdatePolicy.literals).pipe(
+    Flag.withDescription(
+      "Desktop update policy: default, or forward-only to offer only newer releases on the build's own channel (env: T3CODE_DESKTOP_UPDATE_POLICY).",
+    ),
+    Flag.optional,
+  ),
+  prepackaged: Flag.String("prepackaged").pipe(
+    Flag.withDescription(
+      "Package an existing macOS app into the release targets without rebuilding or signing it (env: T3CODE_DESKTOP_PREPACKAGED).",
+    ),
     Flag.optional,
   ),
   wslRuntime: Flag.String("wsl-runtime").pipe(
