@@ -482,3 +482,122 @@ it.effect.each(deliveries)(
       ),
     ),
 );
+
+const layerScheduledTasks = ScheduledTaskService.layer.pipe(
+  Layer.provide(ThreadManagementService.layer),
+  Layer.provide(ServerSettings.layerTest()),
+  Layer.provide(
+    Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
+      ensureTranscript: () => Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
+    }),
+  ),
+  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+  Layer.provide(
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+      namedProjectsRoot: "/projects",
+      isScratchProject: () => Effect.succeed(false),
+    }),
+  ),
+  Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+  Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+  Layer.provide(Layer.mergeAll(NodeCrypto.layer, Scheduler.layer, SqlitePersistence.layerMemory)),
+);
+
+it.effect("opens Claude with the effort a thread-bound scheduled run takes from its thread", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("claude-scheduled-effort");
+      const opened: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput[] = [];
+      const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+        instanceId: modelSelection.instanceId,
+        settings,
+        environment: {},
+        attachmentsDir: cwd,
+        fileSystem: yield* FileSystem.FileSystem,
+        path: yield* Path.Path,
+        crypto: yield* Crypto.Crypto,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        queryRunner: {
+          allocateSessionId: Effect.succeed(sessionId),
+          open: (input) =>
+            Effect.sync(() => {
+              opened.push(input);
+              return {
+                messages: Stream.never,
+                offer: () => Effect.void,
+                setModel: () => Effect.void,
+                applyFlagSettings: () => Effect.void,
+                setPermissionMode: () => Effect.void,
+                backgroundTasks: () => Effect.succeed(false),
+                stopTask: () => Effect.void,
+                interrupt: Effect.void,
+                close: Effect.void,
+              };
+            }),
+          forkSession: () => Effect.die("unused"),
+          subagentLaunchToolUseId: () => Effect.succeed(null),
+          assertComplete: Effect.void,
+        },
+      });
+      // "low" is offered by claude-sonnet-4-6 and is neither its default nor remapped.
+      const threadSelection = { ...modelSelection, options: [{ id: "effort", value: "low" }] };
+      const storedSelection = { ...modelSelection, options: [{ id: "effort", value: "medium" }] };
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = ThreadId.make("thread:scheduled-effort");
+        const projectId = ProjectId.make("project:scheduled-effort");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("create"),
+          threadId,
+          projectId,
+          title: "Scheduled effort",
+          modelSelection: threadSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ScheduledTaskService.ScheduledTaskService;
+          const { task } = yield* service.upsert(
+            yield* decodeScheduledTask({
+              title: "Status check",
+              prompt: "Check the build.",
+              enabled: false,
+              schedule: { type: "interval", everyMs: 60_000 },
+              projectId,
+              threadId,
+              workspaceStrategy: { type: "root" },
+              modelSelection: storedSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+            }),
+          );
+          const ran = yield* service.runNow({ id: task.id });
+          assert.equal(ran.task.lastRunStatus, "succeeded");
+        }).pipe(Effect.provide(layerScheduledTasks));
+        yield* worker.drain();
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepStrictEqual(projection.runs[0]?.modelSelection, threadSelection);
+        assert.equal(opened.length, 1);
+        assert.equal(opened[0]?.options.effort, "low");
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "claude-scheduled-effort" },
+            ProviderAdapterRegistry.layerSingle(adapter),
+            { runEffectWorker: false },
+          ),
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  ),
+);

@@ -464,6 +464,114 @@ it.effect("runs a thread-bound automation on the provider the thread uses now", 
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
 });
 
+it.effect("launches an unbound automation with its stored provider options", () => {
+  const harness = makeHarness();
+  const layerScheduledTasks = ScheduledTasks.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        harness.layer,
+        NodeCrypto.layer,
+        Scheduler.layer,
+        Layer.mock(SecretRequests.SecretRequests)({}),
+      ),
+    ),
+  );
+  const storedSelection = {
+    ...modelSelection,
+    options: [{ id: "reasoningEffort", value: "high" }],
+  };
+  return Effect.gen(function* () {
+    const tasks = yield* ScheduledTasks.ScheduledTaskService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const { task } = yield* tasks.upsert({
+      id: ScheduledTaskId.make("scheduled-task:unbound-options"),
+      title: "Nightly review",
+      prompt: "Review the open pull requests.",
+      enabled: false,
+      schedule: { type: "interval", everyMs: 3_600_000 },
+      projectId,
+      threadId: null,
+      workspaceStrategy: { type: "root" },
+      modelSelection: storedSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    assert.deepStrictEqual(task.modelSelection, storedSelection);
+
+    const result = yield* tasks.runNow({ id: task.id });
+    assert.equal(result.task.lastRunStatus, "succeeded");
+    assert.isNotNull(result.threadId);
+    const projection = yield* threads.getThreadProjection(result.threadId!);
+    const message = projection.messages.find((item) => item.scheduledTaskId === task.id);
+    const run = projection.runs.find((item) => item.id === message?.runId);
+    assert.isDefined(run);
+    assert.deepStrictEqual(projection.thread.modelSelection, storedSelection);
+    assert.deepStrictEqual(run!.modelSelection, storedSelection);
+  }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
+});
+
+it.effect(
+  "runs a thread-bound automation with the thread's provider options, ignoring the task's stored options",
+  () => {
+    const harness = makeHarness();
+    const layerScheduledTasks = ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          harness.layer,
+          NodeCrypto.layer,
+          Scheduler.layer,
+          Layer.mock(SecretRequests.SecretRequests)({}),
+        ),
+      ),
+    );
+    const threadSelection = {
+      ...modelSelection,
+      options: [{ id: "reasoningEffort", value: "high" }],
+    };
+    const storedSelection = {
+      ...modelSelection,
+      options: [{ id: "reasoningEffort", value: "low" }],
+    };
+    return Effect.gen(function* () {
+      const tasks = yield* ScheduledTasks.ScheduledTaskService;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches.launch({
+        ...launchInput({ command: "command:bound-options", thread: "thread:bound-options" }),
+        modelSelection: threadSelection,
+      });
+      const { task } = yield* tasks.upsert({
+        id: ScheduledTaskId.make("scheduled-task:bound-options"),
+        title: "Hourly check",
+        prompt: "Check on the delegated workers.",
+        enabled: false,
+        schedule: { type: "interval", everyMs: 3_600_000 },
+        projectId,
+        threadId: launched.threadId,
+        workspaceStrategy: { type: "root" },
+        modelSelection: storedSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      assert.deepStrictEqual(task.modelSelection, storedSelection);
+
+      const result = yield* tasks.runNow({ id: task.id });
+      assert.equal(result.task.lastRunStatus, "succeeded");
+      assert.equal(result.threadId, launched.threadId);
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      const message = projection.messages.find((item) => item.scheduledTaskId === task.id);
+      const run = projection.runs.find((item) => item.id === message?.runId);
+      assert.isDefined(run);
+      assert.deepStrictEqual(run!.modelSelection, threadSelection);
+      assert.deepStrictEqual(projection.thread.modelSelection, threadSelection);
+    }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
+  },
+);
+
 it.effect("retains automation and sender attribution while a message waits in the queue", () => {
   const harness = makeHarness({ runSetup: () => Effect.never });
   return Effect.gen(function* () {
