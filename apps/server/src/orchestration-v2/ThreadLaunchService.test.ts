@@ -478,7 +478,10 @@ it.effect("launches an unbound automation with its stored provider options", () 
   );
   const storedSelection = {
     ...modelSelection,
-    options: [{ id: "reasoningEffort", value: "high" }],
+    options: [
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "priority" },
+    ],
   };
   return Effect.gen(function* () {
     const tasks = yield* ScheduledTasks.ScheduledTaskService;

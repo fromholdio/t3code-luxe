@@ -2,10 +2,12 @@ import {
   EnvironmentId,
   ProjectId,
   DEFAULT_SERVER_SETTINGS,
+  type ModelCapabilities,
   type ServerConfig,
   ProviderInstanceId,
   ScheduledTaskId,
   type ScheduledTask,
+  ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -19,7 +21,10 @@ import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   scheduledTaskDefaultModel,
   matchesScheduledTaskScope,
+  modelOptionResetNotice,
+  reconcileModelOptions,
   scheduleFromDraft,
+  scheduledTaskSaveSelection,
   taskToDraft,
 } from "./scheduledTasksSettings.logic";
 
@@ -324,4 +329,100 @@ it("rejects dedupe templates without a request placeholder", () => {
   const draft = taskToDraft({ ...legacyTask, schedule: { type: "webhook", signature: null } });
   expect(scheduleFromDraft({ ...draft, replayKey: "literal" })).toBeNull();
   expect(scheduleFromDraft({ ...draft, coalesceKey: "{{body.bad" })).toBeNull();
+});
+
+describe("scheduled task model options", () => {
+  const codex = ProviderInstanceId.make("codex");
+  const effort = (values: readonly string[]) => ({
+    id: "reasoningEffort",
+    label: "Reasoning",
+    type: "select" as const,
+    options: values.map((id) => ({ id, label: id.toUpperCase(), isDefault: id === "medium" })),
+  });
+  const serviceTier = {
+    id: "serviceTier",
+    label: "Service tier",
+    type: "select" as const,
+    options: [
+      { id: "default", label: "Default", isDefault: true },
+      { id: "priority", label: "Priority" },
+    ],
+  };
+  const richCaps: ModelCapabilities = {
+    optionDescriptors: [effort(["low", "medium", "high", "xhigh"]), serviceTier],
+  };
+  const options = [
+    { id: "reasoningEffort", value: "xhigh" },
+    { id: "serviceTier", value: "priority" },
+  ];
+  const storedTask: ScheduledTask = {
+    ...legacyTask,
+    modelSelection: { instanceId: codex, model: "gpt-5.4", options },
+  };
+
+  it("keeps supported values and reports exactly what was reset or dropped", () => {
+    expect(reconcileModelOptions({ options, previousCaps: richCaps, nextCaps: richCaps })).toEqual({
+      options,
+      resets: [],
+    });
+
+    const narrowed = reconcileModelOptions({
+      options,
+      previousCaps: richCaps,
+      nextCaps: { optionDescriptors: [effort(["low", "medium", "high"])] },
+    });
+    expect(narrowed.options).toEqual([{ id: "reasoningEffort", value: "medium" }]);
+    expect(narrowed.resets).toEqual([
+      { id: "reasoningEffort", label: "Reasoning", kind: "reset" },
+      { id: "serviceTier", label: "Service tier", kind: "dropped" },
+    ]);
+    expect(modelOptionResetNotice(narrowed.resets)).toBe(
+      "Reasoning was reset to the model default; Service tier isn't offered by this model.",
+    );
+
+    const tierOnly = reconcileModelOptions({
+      options: [options[1]!],
+      previousCaps: richCaps,
+      nextCaps: { optionDescriptors: [effort(["low", "medium"]), serviceTier] },
+    });
+    expect(tierOnly).toEqual({ options: [options[1]], resets: [] });
+    expect(modelOptionResetNotice(tierOnly.resets)).toBeNull();
+
+    const acrossProviders = reconcileModelOptions({
+      options: [{ id: "effort", value: "high" }],
+      previousCaps: { optionDescriptors: [{ ...effort(["low", "high"]), id: "effort" }] },
+      nextCaps: richCaps,
+    });
+    expect(acrossProviders.resets).toEqual([{ id: "effort", label: "Reasoning", kind: "reset" }]);
+    expect(modelOptionResetNotice(acrossProviders.resets)).toBe(
+      "Reasoning was reset to the model default.",
+    );
+  });
+
+  it("loads stored options and saves them with the picked model for unbound tasks", () => {
+    const draft = taskToDraft(storedTask);
+    expect(draft.modelOptions).toEqual(options);
+    expect(
+      scheduledTaskSaveSelection(draft, {
+        instanceId: codex,
+        model: "gpt-5.5",
+        options: draft.modelOptions!,
+      }),
+    ).toEqual({ instanceId: codex, model: "gpt-5.5", options });
+    expect(scheduledTaskSaveSelection(draft, { instanceId: codex, model: "gpt-5.5" })).toEqual({
+      instanceId: codex,
+      model: "gpt-5.5",
+    });
+  });
+
+  it("saves a thread-bound task's stored selection unchanged", () => {
+    const draft = taskToDraft({ ...storedTask, threadId: ThreadId.make("thread") });
+    expect(
+      scheduledTaskSaveSelection(draft, {
+        instanceId: ProviderInstanceId.make("claude"),
+        model: "claude-opus",
+      }),
+    ).toBe(storedTask.modelSelection);
+    expect(scheduledTaskSaveSelection(draft, null)).toBe(storedTask.modelSelection);
+  });
 });

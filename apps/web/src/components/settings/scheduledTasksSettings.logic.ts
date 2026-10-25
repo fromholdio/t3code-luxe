@@ -6,7 +6,9 @@ import {
   ScheduledTaskId,
   type ScheduledTask,
   type ScheduledTaskUpsertSchedule,
+  type ModelCapabilities,
   type ModelSelection,
+  type ProviderOptionSelection,
   type RuntimeMode,
   type ProviderInteractionMode,
   type ServerSettings,
@@ -19,6 +21,11 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 
+import {
+  buildExplicitProviderOptionSelectionsFromDescriptors,
+  createModelSelection,
+  getProviderOptionDescriptors,
+} from "@t3tools/shared/model";
 import {
   resolveProjectSettings,
   type LegacyProjectSettingsFields,
@@ -73,8 +80,10 @@ export interface DraftState {
   readonly modelKey: string;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
-  /** Retain the source selection's provider options when the picker leaves instanceId:model unchanged. */
+  /** The stored selection, saved unchanged for thread-bound tasks. */
   readonly baseModelSelection: ModelSelection | null;
+  readonly modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
+  readonly modelOptionsNotice: string | null;
   readonly signatureEnabled: boolean;
   readonly signatureHeader: string;
   readonly signatureEncoding: "hex" | "base64";
@@ -228,6 +237,8 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     baseModelSelection: task.modelSelection,
+    modelOptions: task.modelSelection.options,
+    modelOptionsNotice: null,
     ...(schedule.type === "webhook" && schedule.signature !== null
       ? {
           signatureEnabled: true,
@@ -284,4 +295,57 @@ export function scheduledTaskDefaultModel(
   );
   const fallback = models.find(({ model }) => model.isDefault) ?? models[0];
   return fallback ? { instanceId: fallback.instanceId, model: fallback.model.slug } : null;
+}
+
+export interface ModelOptionReset {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: "reset" | "dropped";
+}
+
+export function reconcileModelOptions(input: {
+  readonly options: ReadonlyArray<ProviderOptionSelection> | undefined;
+  readonly previousCaps: ModelCapabilities | null;
+  readonly nextCaps: ModelCapabilities | null;
+}) {
+  const next = input.nextCaps
+    ? getProviderOptionDescriptors({ caps: input.nextCaps, selections: input.options })
+    : [];
+  const previous = input.previousCaps
+    ? getProviderOptionDescriptors({ caps: input.previousCaps })
+    : [];
+  const options = buildExplicitProviderOptionSelectionsFromDescriptors(next, input.options);
+  const resets = (input.options ?? []).flatMap((selection): ModelOptionReset[] => {
+    if (options?.find((option) => option.id === selection.id)?.value === selection.value) return [];
+    const nextDescriptor = next.find((descriptor) => descriptor.id === selection.id);
+    const label =
+      nextDescriptor?.label ??
+      previous.find((descriptor) => descriptor.id === selection.id)?.label ??
+      selection.id;
+    // Providers name the same control differently, such as Claude effort and Codex reasoningEffort.
+    const offered = nextDescriptor ?? next.find((descriptor) => descriptor.label === label);
+    return [{ id: selection.id, label, kind: offered ? "reset" : "dropped" }];
+  });
+  return { options, resets };
+}
+
+export function modelOptionResetNotice(resets: ReadonlyArray<ModelOptionReset>): string | null {
+  if (resets.length === 0) return null;
+  return `${resets
+    .map((reset) =>
+      reset.kind === "reset"
+        ? `${reset.label} was reset to the model default`
+        : `${reset.label} isn't offered by this model`,
+    )
+    .join("; ")}.`;
+}
+
+export function scheduledTaskSaveSelection(
+  draft: Pick<DraftState, "threadId" | "baseModelSelection">,
+  selection: ModelSelection | null,
+): ModelSelection | null {
+  if (draft.threadId && draft.baseModelSelection) return draft.baseModelSelection;
+  return (
+    selection && createModelSelection(selection.instanceId, selection.model, selection.options)
+  );
 }
