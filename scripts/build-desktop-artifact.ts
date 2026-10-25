@@ -2941,7 +2941,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
     buildConfig.mac = {
-      target: target === "dmg" ? [target, "zip"] : [target],
+      // electron-builder embeds app-update.yml only when packing a zip or dmg; a dir build discards that zip.
+      target: target === "dmg" ? [target, "zip"] : target === "dir" ? ["zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       extendInfo: {
@@ -4365,6 +4366,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
 
   const copiedArtifacts: string[] = [];
   for (const entry of stageEntries) {
+    if (options.platform === "mac" && options.target === "dir") break;
     const from = path.join(stageDistDir, entry);
     const stat = yield* fs.stat(from).pipe(Effect.orElseSucceed(() => null));
     if (!stat || stat.type !== "File") continue;

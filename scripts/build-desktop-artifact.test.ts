@@ -1504,7 +1504,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(developerIdMac.entitlements, "/stage/entitlements.mac.plist");
       assert.isFalse(developerIdMac.notarize);
       assert.notProperty(developerIdMac, "provisioningProfile");
-      assert.deepStrictEqual(developerIdMac.target, ["dir"]);
+      assert.deepStrictEqual(developerIdMac.target, ["zip"]);
       assert.isTrue(developerId.forceCodeSigning);
       assert.deepStrictEqual(developerId.publish, [
         {
