@@ -8,6 +8,7 @@ import {
   type DesktopUpdateState,
 } from "@t3tools/contracts";
 import { errorTag } from "@t3tools/shared/observability";
+import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -61,6 +62,22 @@ interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
+
+// Set at build time by `scripts/build-desktop-artifact.ts --update-policy`.
+const AppUpdatePolicyMetadata = Schema.Struct({
+  t3codeUpdatePolicy: Schema.optional(Schema.Literals(["forward-only"])),
+});
+const decodeAppUpdatePolicyMetadata = Schema.decodeEffect(
+  Schema.fromJsonString(AppUpdatePolicyMetadata),
+);
+
+function isNewerVersion(candidate: string, current: string): boolean {
+  return (
+    parseSemver(candidate) !== null &&
+    parseSemver(current) !== null &&
+    compareSemverVersions(candidate, current) > 0
+  );
+}
 
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
@@ -407,6 +424,24 @@ export const make = Effect.gen(function* () {
           )
       : false;
 
+  // Forward-only builds never downgrade and follow only their own channel.
+  const forwardOnly =
+    environment.isPackaged &&
+    (yield* fileSystem
+      .readFileString(environment.path.join(environment.appRoot, "package.json"))
+      .pipe(
+        Effect.flatMap(decodeAppUpdatePolicyMetadata),
+        Effect.map((metadata) => metadata.t3codeUpdatePolicy === "forward-only"),
+        Effect.orElseSucceed(() => false),
+      ));
+  const buildChannel = resolveDefaultDesktopUpdateChannel(environment.appVersion);
+  const channelUnavailableReason = (channel: DesktopUpdateChannel): Option.Option<string> =>
+    forwardOnly && channel !== buildChannel
+      ? Option.some(
+          `This build only receives ${buildChannel === "nightly" ? "Nightly" : "Stable"} updates.`,
+        )
+      : Option.none();
+
   const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
     Effect.map((appUpdateYmlConfig) => Option.isSome(appUpdateYmlConfig) || config.mockUpdates),
   );
@@ -454,14 +489,15 @@ export const make = Effect.gen(function* () {
   ) {
     yield* Effect.annotateCurrentSpan({ channel });
     const allowsPrerelease = channel === "nightly";
+    const allowsDowngrade = allowsPrerelease && !forwardOnly;
     yield* electronUpdater.setChannel(channel);
     yield* electronUpdater.setAllowPrerelease(allowsPrerelease);
-    yield* electronUpdater.setAllowDowngrade(allowsPrerelease);
+    yield* electronUpdater.setAllowDowngrade(allowsDowngrade);
     yield* electronUpdater.setFullChangelog(allowsPrerelease);
     yield* logUpdaterInfo("using update channel", {
       channel,
       allowPrerelease: allowsPrerelease,
-      allowDowngrade: allowsPrerelease,
+      allowDowngrade: allowsDowngrade,
       fullChangelog: allowsPrerelease,
     });
   });
@@ -475,6 +511,7 @@ export const make = Effect.gen(function* () {
     if (!(yield* Ref.get(updaterConfiguredRef))) return false;
 
     const state = yield* Ref.get(updateStateRef);
+    if (Option.isSome(channelUnavailableReason(state.channel))) return false;
     if (state.status === "downloading") {
       yield* logUpdaterInfo("skipping update check while update is active", {
         reason,
@@ -851,8 +888,14 @@ export const make = Effect.gen(function* () {
       Effect.flatMap(
         Effect.fn("desktop.updates.applyUpdateAvailable")(function* (info) {
           const state = yield* Ref.get(updateStateRef);
-          if (resolveDefaultDesktopUpdateChannel(info.version) !== state.channel) {
-            yield* logUpdaterInfo("ignoring update that does not match selected channel", {
+          const ignoredBecause =
+            resolveDefaultDesktopUpdateChannel(info.version) !== state.channel
+              ? "ignoring update that does not match selected channel"
+              : forwardOnly && !isNewerVersion(info.version, environment.appVersion)
+                ? "ignoring update that is not newer than this build"
+                : undefined;
+          if (ignoredBecause !== undefined) {
+            yield* logUpdaterInfo(ignoredBecause, {
               version: info.version,
               channel: state.channel,
             });
@@ -1048,7 +1091,12 @@ export const make = Effect.gen(function* () {
 
       const settings = yield* desktopSettings.get;
       const disabledReason = yield* resolveDisabledReason;
-      yield* setState(yield* baseUpdateState(settings.updateChannel, disabledReason));
+      yield* setState(
+        yield* baseUpdateState(
+          settings.updateChannel,
+          Option.orElse(disabledReason, () => channelUnavailableReason(settings.updateChannel)),
+        ),
+      );
       if (Option.isSome(disabledReason)) {
         return;
       }
@@ -1056,7 +1104,7 @@ export const make = Effect.gen(function* () {
 
       yield* electronUpdater.setAutoDownload(false);
       yield* electronUpdater.setAutoInstallOnAppQuit(false);
-      yield* applyAutoUpdaterChannel(settings.updateChannel);
+      yield* applyAutoUpdaterChannel(forwardOnly ? buildChannel : settings.updateChannel);
       yield* electronUpdater.setDisableDifferentialDownload(
         isArm64HostRunningIntelBuild(environment.runtimeInfo),
       );
@@ -1118,7 +1166,9 @@ export const make = Effect.gen(function* () {
             ),
           );
 
-        const disabledReason = yield* resolveDisabledReason;
+        const disabledReason = Option.orElse(yield* resolveDisabledReason, () =>
+          channelUnavailableReason(nextChannel),
+        );
         yield* setState(yield* baseUpdateState(nextChannel, disabledReason));
 
         if (Option.isSome(disabledReason) || !(yield* Ref.get(updaterConfiguredRef))) {
@@ -1127,7 +1177,7 @@ export const make = Effect.gen(function* () {
 
         yield* applyAutoUpdaterChannel(nextChannel);
         const allowDowngrade = yield* electronUpdater.allowDowngrade;
-        yield* electronUpdater.setAllowDowngrade(true);
+        yield* electronUpdater.setAllowDowngrade(!forwardOnly);
         yield* checkForUpdates("channel-change", "held").pipe(
           Effect.ensuring(electronUpdater.setAllowDowngrade(allowDowngrade).pipe(Effect.ignore)),
         );
