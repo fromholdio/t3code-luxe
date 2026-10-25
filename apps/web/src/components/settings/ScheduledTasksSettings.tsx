@@ -48,6 +48,8 @@ import {
 import { formatRelativeTime } from "../../timestampFormat";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import { getProviderModelCapabilities } from "../../providerModels";
+import { createModelSelection } from "@t3tools/shared/model";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -83,8 +85,11 @@ import {
   webhookDraftErrors,
   webhookDeliveryLabel,
   matchesScheduledTaskScope,
+  modelOptionResetNotice,
+  reconcileModelOptions,
   scheduleFromDraft,
   scheduledTaskDefaultModel,
+  scheduledTaskSaveSelection,
   taskToDraft,
   type DraftState,
   type ScheduleMode,
@@ -95,6 +100,7 @@ import { Menu, MenuTrigger, MenuPopup, MenuItem, MenuSeparator } from "../ui/men
 import { ToggleGroup, Toggle } from "../ui/toggle-group";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from "../ui/empty";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { TraitsPicker } from "../chat/TraitsPicker";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -149,6 +155,8 @@ const EMPTY_DRAFT: DraftState = {
   runtimeMode: "full-access",
   interactionMode: "default",
   baseModelSelection: null,
+  modelOptions: undefined,
+  modelOptionsNotice: null,
   signatureEnabled: false,
   ...WEBHOOK_SIGNATURE_DEFAULTS,
   signatureSecret: "",
@@ -1145,11 +1153,23 @@ function ScheduledTaskEditorForm({
   const activeSelection =
     draftSelection &&
     instanceEntries.some((entry) => entry.instanceId === draftSelection.instanceId && entry.enabled)
-      ? draftSelection
+      ? createModelSelection(draftSelection.instanceId, draftSelection.model, draft.modelOptions)
       : scheduledTaskDefaultModel(settings, selectedProject ?? null, instanceEntries);
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
   const activeModel = activeSelection?.model ?? "";
+  const activeEntry = instanceEntries.find((entry) => entry.instanceId === activeInstanceId);
+  const modelCaps = (instanceId: ProviderInstanceId, model: string) => {
+    const entry = instanceEntries.find((candidate) => candidate.instanceId === instanceId);
+    return entry
+      ? getProviderModelCapabilities(
+          entry.models,
+          model,
+          entry.driverKind,
+          settings.planModeEnabled,
+        )
+      : null;
+  };
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     providers,
@@ -1177,12 +1197,13 @@ function ScheduledTaskEditorForm({
       tasksQuery.data === null
     )
       return;
-    const selection = activeSelection;
+    setDraft((current) => ({ ...current, modelOptionsNotice: null }));
+    const modelSelection = scheduledTaskSaveSelection(draft, activeSelection);
     if (
       !draft.title.trim() ||
       !draft.prompt.trim() ||
       !projects.some((project) => project.id === selectedProjectId) ||
-      selection === null
+      modelSelection === null
     ) {
       reportFailure("Scheduled task is incomplete", "Add a title, prompt, project, and model.");
       return;
@@ -1218,12 +1239,6 @@ function ScheduledTaskEditorForm({
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
     }
-    const modelSelection =
-      draft.baseModelSelection !== null &&
-      draft.baseModelSelection.instanceId === selection.instanceId &&
-      draft.baseModelSelection.model === selection.model
-        ? draft.baseModelSelection
-        : selection;
     const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
       draft.workspaceMode === "root"
         ? { type: "root" }
@@ -1291,6 +1306,8 @@ function ScheduledTaskEditorForm({
                   projectId: "",
                   modelKey: "",
                   baseModelSelection: null,
+                  modelOptions: undefined,
+                  modelOptionsNotice: null,
                   baseRef: "main",
                   startFromOrigin: true,
                   existingWorktreePath: "",
@@ -1457,22 +1474,62 @@ function ScheduledTaskEditorForm({
           </Field>
 
           <Field label="Model">
-            <div>
-              <ProviderModelPicker
-                environmentId={environmentId}
-                disabled={saving || !connected}
-                activeInstanceId={activeInstanceId}
-                model={activeModel}
-                lockedProvider={null}
-                instanceEntries={instanceEntries}
-                modelOptionsByInstance={modelOptionsByInstance}
-                isComposerOwned={false}
-                triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                onInstanceModelChange={(instanceId, model) =>
-                  setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
-                }
-              />
-            </div>
+            {draft.threadId ? (
+              <p className="text-sm text-muted-foreground">
+                Runs use the bound thread's current model and options.
+              </p>
+            ) : (
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <ProviderModelPicker
+                  environmentId={environmentId}
+                  disabled={saving || !connected}
+                  activeInstanceId={activeInstanceId}
+                  model={activeModel}
+                  lockedProvider={null}
+                  instanceEntries={instanceEntries}
+                  modelOptionsByInstance={modelOptionsByInstance}
+                  isComposerOwned={false}
+                  triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                  onInstanceModelChange={(instanceId, model) => {
+                    const { options, resets } = reconcileModelOptions({
+                      options: activeSelection?.options,
+                      previousCaps: modelCaps(activeInstanceId, activeModel),
+                      nextCaps: modelCaps(instanceId, model),
+                    });
+                    setDraft((current) => ({
+                      ...current,
+                      modelKey: `${instanceId}:${model}`,
+                      modelOptions: options,
+                      modelOptionsNotice: modelOptionResetNotice(resets),
+                    }));
+                  }}
+                />
+                {activeSelection && activeEntry ? (
+                  <TraitsPicker
+                    provider={activeEntry.driverKind}
+                    models={activeEntry.models}
+                    model={activeModel}
+                    modelOptions={activeSelection.options ?? []}
+                    allowPromptInjectedEffort={false}
+                    planModeEnabled={settings.planModeEnabled}
+                    disabled={saving || !connected}
+                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                    onModelOptionsChange={(options) =>
+                      setDraft((current) => ({
+                        ...current,
+                        modelKey: `${activeInstanceId}:${activeModel}`,
+                        modelOptions: options,
+                      }))
+                    }
+                  />
+                ) : null}
+              </div>
+            )}
+            {draft.modelOptionsNotice ? (
+              <p className="text-xs text-muted-foreground" role="status">
+                {draft.modelOptionsNotice}
+              </p>
+            ) : null}
           </Field>
 
           <div className="space-y-3">
