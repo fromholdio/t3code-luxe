@@ -35,6 +35,8 @@ export interface UpdatesHarnessOptions {
   readonly platform?: NodeJS.Platform;
   readonly packageType?: string | undefined;
   readonly installRecord?: string | undefined;
+  readonly appVersion?: string;
+  readonly appPackageJson?: string;
 }
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
@@ -42,6 +44,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   let quitAndInstallCount = 0;
   let downloadCount = 0;
   let allowDowngrade = false;
+  const allowDowngradeValues: boolean[] = [];
   let fullChangelog = false;
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
@@ -78,6 +81,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     setAllowDowngrade: (value) =>
       Effect.sync(() => {
         allowDowngrade = value;
+        allowDowngradeValues.push(value);
       }),
     setFullChangelog: (value) =>
       Effect.sync(() => {
@@ -157,7 +161,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     homeDirectory: `/tmp/t3-desktop-updates-home-${process.pid}`,
     platform: options.platform ?? "darwin",
     processArch: "x64",
-    appVersion: "1.2.3",
+    appVersion: options.appVersion ?? "1.2.3",
     appPath: "/repo",
     isPackaged: true,
     resourcesPath: "/missing/resources",
@@ -224,6 +228,9 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
         ? (installRecords.get(path) ?? previousInstallRecord)
         : undefined;
       if (installRecord !== undefined) return Effect.succeed(installRecord);
+      if (path === "/repo/package.json" && options.appPackageJson !== undefined) {
+        return Effect.succeed(options.appPackageJson);
+      }
       return path === "/missing/resources/package-type" && options.packageType !== undefined
         ? Effect.succeed(options.packageType)
         : Effect.fail(
@@ -279,6 +286,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     downloadCount: () => downloadCount,
     feedUrls: (): ElectronUpdater.ElectronUpdaterFeedUrl[] => feedUrls,
     fullChangelog: () => fullChangelog,
+    allowDowngradeValues: (): ReadonlyArray<boolean> => allowDowngradeValues,
     listenerCount: () =>
       Array.from(listeners.values()).reduce(
         (total, eventListeners) => total + eventListeners.size,

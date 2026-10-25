@@ -20,6 +20,8 @@ import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 
+const FORWARD_ONLY_PACKAGE_JSON = JSON.stringify({ t3codeUpdatePolicy: "forward-only" });
+
 describe("DesktopUpdates", () => {
   it.effect("updates Linux .deb installs and leaves other non-AppImage installs off", () =>
     Effect.gen(function* () {
@@ -671,6 +673,77 @@ describe("DesktopUpdates", () => {
         const result = yield* updates.installPrepared("1.2.4");
         assert.isFalse(result.accepted);
         assert.equal(harness.quitAndInstalls(), 0);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("offers forward-only builds only strictly newer releases", () => {
+    const harness = makeHarness({
+      appVersion: "0.1.3-nightly.20261026.2",
+      appPackageJson: FORWARD_ONLY_PACKAGE_JSON,
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const offer = Effect.fn(function* (version: string) {
+          harness.emit("update-available", { version });
+          yield* flushCallbacks;
+          return (yield* updates.getState).availableVersion;
+        });
+
+        assert.isNull(yield* offer("0.1.3-nightly.20261026.1"));
+        assert.isNull(yield* offer("0.1.3-nightly.20261025.3669"));
+        assert.isNull(yield* offer("0.1.3-nightly.20261026.2"));
+        assert.equal(yield* offer("0.1.3-nightly.20261026.3"), "0.1.3-nightly.20261026.3");
+        assert.equal(yield* offer("0.1.4-nightly.20261101.1"), "0.1.4-nightly.20261101.1");
+        assert.notInclude(harness.allowDowngradeValues(), true);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("keeps forward-only nightly builds on Nightly without allowing downgrades", () => {
+    const harness = makeHarness({
+      appVersion: "0.1.3-nightly.20261026.2",
+      appPackageJson: FORWARD_ONLY_PACKAGE_JSON,
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        assert.equal((yield* updates.getState).status, "idle");
+
+        const stable = yield* updates.setChannel("latest");
+        assert.equal(stable.status, "disabled");
+        assert.equal(stable.message, "This build only receives Nightly updates.");
+        const checks = harness.checkCount();
+        assert.isFalse((yield* updates.check("manual")).checked);
+        assert.equal(harness.checkCount(), checks);
+
+        const nightly = yield* updates.setChannel("nightly");
+        assert.equal(nightly.channel, "nightly");
+        assert.isTrue(nightly.enabled);
+        assert.equal(harness.checkCount(), checks + 1);
+        assert.notInclude(harness.allowDowngradeValues(), true);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("keeps nightly downgrades for builds without an update policy", () => {
+    const harness = makeHarness({ appVersion: "0.1.3-nightly.20261026.2" });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        harness.emit("update-available", { version: "0.1.3-nightly.20261026.1" });
+        yield* flushCallbacks;
+
+        assert.equal((yield* updates.getState).availableVersion, "0.1.3-nightly.20261026.1");
+        assert.deepEqual(harness.allowDowngradeValues(), [true]);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
