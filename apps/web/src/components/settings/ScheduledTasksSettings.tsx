@@ -1519,6 +1519,7 @@ function ScheduledTaskEditorForm({
                         ...current,
                         modelKey: `${activeInstanceId}:${activeModel}`,
                         modelOptions: options,
+                        modelOptionsNotice: null,
                       }))
                     }
                   />
