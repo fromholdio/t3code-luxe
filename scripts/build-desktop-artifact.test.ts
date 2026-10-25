@@ -33,10 +33,13 @@ import {
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
   MacPasskeySigningConfigurationResolutionError,
+  MacDeveloperIdSigningConfigurationError,
   MissingMacPasskeyProvisioningProfileError,
   packWindowsServerAsar,
   preflightWindowsDesktopBuild,
   renderMacPasskeyEntitlements,
+  renderMacDeveloperIdEntitlements,
+  PrepackagedMacAppError,
   resolveMacWebAuthnEntitlements,
   resolveMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
@@ -1484,6 +1487,147 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(error.message, "Failed to resolve macOS passkey signing configuration.");
     assert.notInclude(error.message, secret);
   });
+
+  it.effect("signs Developer ID builds without passkey capabilities or builder notarization", () =>
+    Effect.gen(function* () {
+      const developerId = yield* createBuildConfig(
+        "mac",
+        "dir",
+        "0.1.3-nightly.20261026.1",
+        true,
+        false,
+        undefined,
+        { mode: "developer-id", entitlementsPath: "/stage/entitlements.mac.plist" },
+      );
+      const developerIdMac = developerId.mac as Record<string, unknown>;
+      assert.match(developerIdMac.sign as string, /scripts[\\/]sign-macos\.ts$/);
+      assert.equal(developerIdMac.entitlements, "/stage/entitlements.mac.plist");
+      assert.isFalse(developerIdMac.notarize);
+      assert.notProperty(developerIdMac, "provisioningProfile");
+      assert.deepStrictEqual(developerIdMac.target, ["dir"]);
+      assert.isTrue(developerId.forceCodeSigning);
+      assert.deepStrictEqual(developerId.publish, [
+        {
+          provider: "github",
+          owner: "octo",
+          repo: "t3code-fork",
+          releaseType: "prerelease",
+          channel: "nightly",
+        },
+      ]);
+
+      const passkeys = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.1.3-nightly.20261026.1",
+        true,
+        false,
+        undefined,
+        {
+          mode: "passkeys",
+          entitlementsPath: "/stage/entitlements.mac.plist",
+          provisioningProfilePath: "/profiles/t3code.provisionprofile",
+        },
+      );
+      const passkeysMac = passkeys.mac as Record<string, unknown>;
+      assert.equal(passkeysMac.provisioningProfile, "/profiles/t3code.provisionprofile");
+      assert.notProperty(passkeysMac, "notarize");
+      assert.notProperty(passkeys, "forceCodeSigning");
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: { T3CODE_DESKTOP_UPDATE_REPOSITORY: "octo/t3code-fork" },
+          }),
+        ),
+      ),
+    ),
+  );
+
+  it("grants Developer ID builds only the shared hardened-runtime entitlements", () => {
+    const entitlements = renderMacDeveloperIdEntitlements();
+
+    for (const key of [
+      "com.apple.security.cs.allow-jit",
+      "com.apple.security.cs.allow-unsigned-executable-memory",
+      "com.apple.security.cs.disable-library-validation",
+      "com.apple.security.device.camera",
+      "com.apple.security.device.audio-input",
+    ]) {
+      assert.include(entitlements, `<key>${key}</key>\n    <true/>`);
+    }
+    for (const restricted of [
+      "com.apple.application-identifier",
+      "com.apple.developer.team-identifier",
+      "com.apple.developer.associated-domains",
+      "keychain-access-groups",
+      "com.apple.developer.web-browser.public-key-credential",
+    ]) {
+      assert.notInclude(entitlements, restricted);
+    }
+  });
+
+  it.effect("selects Developer ID signing only explicitly, with --signed and an identity", () =>
+    Effect.gen(function* () {
+      const input = {
+        platform: Option.some("mac" as const),
+        target: Option.none(),
+        arch: Option.some("arm64" as const),
+        buildVersion: Option.none(),
+        outputDir: Option.none(),
+        skipBuild: Option.none(),
+        keepStage: Option.none(),
+        signed: Option.some(true),
+        verbose: Option.none(),
+        mockUpdates: Option.none(),
+        mockUpdateServerPort: Option.none(),
+        wslRuntime: Option.none(),
+      };
+      const resolve = (
+        overrides: Partial<Parameters<typeof resolveBuildOptions>[0]>,
+        env: Record<string, string> = {},
+      ) =>
+        resolveBuildOptions({ ...input, ...overrides }).pipe(
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+        );
+
+      const upstream = yield* resolve({});
+      assert.equal(upstream.macSigning, "passkeys");
+      assert.equal(upstream.updatePolicy, "default");
+      assert.isUndefined(upstream.prepackaged);
+
+      const unsigned = yield* Effect.flip(
+        resolve(
+          { signed: Option.some(false), macSigning: Option.some("developer-id") },
+          { CSC_NAME: "0123456789ABCDEF0123456789ABCDEF01234567" },
+        ),
+      );
+      assert.instanceOf(unsigned, MacDeveloperIdSigningConfigurationError);
+      assert.equal(unsigned.reason, "requires-signed");
+
+      const autoDiscovered = yield* Effect.flip(
+        resolve({ macSigning: Option.some("developer-id") }),
+      );
+      assert.instanceOf(autoDiscovered, MacDeveloperIdSigningConfigurationError);
+      assert.equal(autoDiscovered.reason, "missing-identity");
+
+      const developerId = yield* resolve(
+        { updatePolicy: Option.some("forward-only") },
+        {
+          T3CODE_DESKTOP_MAC_SIGNING: "developer-id",
+          CSC_NAME: "0123456789ABCDEF0123456789ABCDEF01234567",
+        },
+      );
+      assert.equal(developerId.macSigning, "developer-id");
+      assert.equal(developerId.updatePolicy, "forward-only");
+
+      const resigned = yield* Effect.flip(
+        resolve({ prepackaged: Option.some("release/T3 Code (Nightly).app") }),
+      );
+      assert.instanceOf(resigned, PrepackagedMacAppError);
+      assert.equal(resigned.reason, "signed");
+    }),
+  );
 
   it.effect("signs Windows builds with signtool on Windows and the jsign hook elsewhere", () =>
     Effect.gen(function* () {
