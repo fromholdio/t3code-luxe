@@ -28,6 +28,8 @@ export interface MakeDesktopEnvironmentInput {
   readonly isPackaged: boolean;
   readonly resourcesPath: string;
   readonly runningUnderArm64Translation: boolean;
+  // Native app name from the packaged build; web branding keeps the channel label.
+  readonly displayName?: string | undefined;
 }
 
 export class DesktopEnvironment extends Context.Service<
@@ -172,7 +174,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     isDevelopment,
     appVersion: input.appVersion,
   });
-  const displayName = branding.displayName;
+  const displayName = input.displayName ?? branding.displayName;
   const stateDir = resolveDesktopStateDir({
     baseDir,
     isDevelopment,

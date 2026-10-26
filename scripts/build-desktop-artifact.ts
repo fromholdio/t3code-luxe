@@ -69,7 +69,6 @@ const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
 // "passkeys" is upstream's signing with T3 Connect capabilities; "developer-id" signs without them.
 const MacSigningMode = Schema.Literals(["passkeys", "developer-id"]);
-const DesktopUpdatePolicy = Schema.Literals(["default", "forward-only"]);
 
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -192,7 +191,7 @@ interface BuildCliInput {
   readonly mockUpdateServerPort: Option.Option<number>;
   readonly wslRuntime: Option.Option<string>;
   readonly macSigning?: Option.Option<typeof MacSigningMode.Type>;
-  readonly updatePolicy?: Option.Option<typeof DesktopUpdatePolicy.Type>;
+  readonly productName?: Option.Option<string>;
   readonly prepackaged?: Option.Option<string>;
 }
 
@@ -719,6 +718,17 @@ export class PrepackagedMacAppError extends Schema.TaggedError<PrepackagedMacApp
   }
 }
 
+export class InvalidDesktopProductNameError extends Schema.TaggedError<InvalidDesktopProductNameError>()(
+  "InvalidDesktopProductNameError",
+  {
+    productName: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Product name "${this.productName}" must be a valid app file name without "/" or ":".`;
+  }
+}
+
 export class DesktopBuildOutputExistsError extends Schema.TaggedError<DesktopBuildOutputExistsError>()(
   "DesktopBuildOutputExistsError",
   {
@@ -1009,7 +1019,7 @@ interface ResolvedBuildOptions {
   readonly mockUpdateServerPort: number | undefined;
   readonly wslRuntime: string | undefined;
   readonly macSigning: typeof MacSigningMode.Type;
-  readonly updatePolicy: typeof DesktopUpdatePolicy.Type;
+  readonly productName: string | undefined;
   readonly prepackaged: string | undefined;
 }
 
@@ -1019,8 +1029,8 @@ interface StagePackageJson {
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
   readonly t3codeWebAuthn?: MacWebAuthnEntitlements;
-  // Read by apps/desktop/src/updates/DesktopUpdates.ts.
-  readonly t3codeUpdatePolicy?: "forward-only";
+  // Read by apps/desktop/src/electron/ElectronApp.ts for the native menu, window title and About panel.
+  readonly t3codeDisplayName?: string;
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -1722,9 +1732,7 @@ const BuildEnvConfig = Config.all({
   mockUpdateServerPort: Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
   wslRuntime: Config.String("T3CODE_DESKTOP_WSL_RUNTIME").pipe(Config.option),
   macSigning: Config.schema(MacSigningMode, "T3CODE_DESKTOP_MAC_SIGNING").pipe(Config.option),
-  updatePolicy: Config.schema(DesktopUpdatePolicy, "T3CODE_DESKTOP_UPDATE_POLICY").pipe(
-    Config.option,
-  ),
+  productName: Config.String("T3CODE_DESKTOP_PRODUCT_NAME").pipe(Config.option),
   prepackaged: Config.String("T3CODE_DESKTOP_PREPACKAGED").pipe(Config.option),
   // electron-builder's own identity selector, required so Developer ID builds never auto-discover.
   signingIdentity: Config.String("CSC_NAME").pipe(Config.option),
@@ -1833,11 +1841,11 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
       return yield* new MacDeveloperIdSigningConfigurationError({ reason: "missing-identity" });
     }
   }
-  const updatePolicy = mergeOptions(
-    input.updatePolicy ?? Option.none(),
-    env.updatePolicy,
-    "default",
-  );
+  const productName =
+    mergeOptions(input.productName ?? Option.none(), env.productName, "").trim() || undefined;
+  if (productName !== undefined && /[/:]/u.test(productName)) {
+    return yield* new InvalidDesktopProductNameError({ productName });
+  }
   const configuredPrepackaged = mergeOptions(
     input.prepackaged ?? Option.none(),
     env.prepackaged,
@@ -1867,7 +1875,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     mockUpdateServerPort,
     wslRuntime,
     macSigning,
-    updatePolicy,
+    productName,
     prepackaged,
   } satisfies ResolvedBuildOptions;
 });
@@ -2868,7 +2876,8 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
+export function resolveDesktopProductName(version: string, productName?: string): string {
+  if (productName) return productName;
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
@@ -2891,10 +2900,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  productName?: string,
 ) {
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
-    productName: resolveDesktopProductName(version),
+    productName: resolveDesktopProductName(version, productName),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     files: [
@@ -2998,7 +3008,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac" && target === "dmg") {
     buildConfig.dmg = {
       // Finder caches DMG backgrounds by volume name; give each installer its own.
-      title: `${resolveDesktopProductName(version)} ${version} Installer`,
+      title: `${resolveDesktopProductName(version, productName)} ${version} Installer`,
       background: `dmg/dmg-background-${updateChannel}.png`,
       window: {
         width: 640,
@@ -3781,6 +3791,7 @@ const packagePrepackagedMacApp = Effect.fn("packagePrepackagedMacApp")(function*
       undefined,
       false,
       options.arch,
+      options.productName,
     ),
     devDependencies: { electron: desktopPackageJson.dependencies.electron },
   });
@@ -4157,9 +4168,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     t3codeCommitHash: commitHash,
     // Read by apps/desktop/src/preview/Passkeys.ts; must match the signed entitlements.
     ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
-    ...(options.updatePolicy === "forward-only"
-      ? { t3codeUpdatePolicy: "forward-only" as const }
-      : {}),
+    ...(options.productName ? { t3codeDisplayName: options.productName } : {}),
     private: true,
     packageManager: rootPackageJson.packageManager,
     description:
@@ -4186,6 +4195,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
           : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
+      options.productName,
     ),
     dependencies: stageDependencies,
     devDependencies: {
@@ -4350,7 +4360,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   if (options.platform === "win") {
     yield* validateWindowsPackagedPayload({
       stageDistDir,
-      appExecutableName: `${resolveDesktopProductName(appVersion)}.exe`,
+      appExecutableName: `${resolveDesktopProductName(appVersion, options.productName)}.exe`,
       targetArch: options.arch,
       appVersion,
       expectWslRuntime: bundlesWslRuntime({
@@ -4464,9 +4474,9 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     ),
     Flag.optional,
   ),
-  updatePolicy: Flag.Literals("update-policy", DesktopUpdatePolicy.literals).pipe(
+  productName: Flag.String("product-name").pipe(
     Flag.withDescription(
-      "Desktop update policy: default, or forward-only to offer only newer releases on the build's own channel (env: T3CODE_DESKTOP_UPDATE_POLICY).",
+      "App name shown by the operating system and native menus, replacing the channel default (env: T3CODE_DESKTOP_PRODUCT_NAME).",
     ),
     Flag.optional,
   ),
