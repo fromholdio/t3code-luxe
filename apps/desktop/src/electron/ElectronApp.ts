@@ -1,6 +1,10 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - The environment is built before Electron is ready, where reads must not yield.
+import * as NodeFS from "node:fs";
+
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
@@ -12,6 +16,24 @@ export interface ElectronAppMetadata {
   readonly isPackaged: boolean;
   readonly resourcesPath: string;
   readonly runningUnderArm64Translation: boolean;
+  readonly displayName: string | undefined;
+}
+
+// Written by scripts/build-desktop-artifact.ts --product-name.
+const PackagedDisplayName = Schema.fromJsonString(
+  Schema.Struct({ t3codeDisplayName: Schema.optional(Schema.String) }),
+);
+const decodePackagedDisplayName = Schema.decodeUnknownOption(PackagedDisplayName);
+
+function readPackagedDisplayName(appPath: string): string | undefined {
+  let raw: string;
+  try {
+    raw = NodeFS.readFileSync(`${appPath}/package.json`, "utf8");
+  } catch {
+    return undefined;
+  }
+  const displayName = Option.getOrUndefined(decodePackagedDisplayName(raw))?.t3codeDisplayName;
+  return displayName?.trim() || undefined;
 }
 
 export class ElectronAppMetadataReadError extends Schema.TaggedError<ElectronAppMetadataReadError>()(
@@ -119,6 +141,7 @@ export const make = ElectronApp.of({
       isPackaged: Electron.app.isPackaged,
       resourcesPath: process.resourcesPath,
       runningUnderArm64Translation: Electron.app.runningUnderARM64Translation === true,
+      displayName: Electron.app.isPackaged ? readPackagedDisplayName(appPath) : undefined,
     };
   }),
   name: Effect.sync(() => Electron.app.name),

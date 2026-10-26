@@ -34,6 +34,7 @@ import {
   UnsupportedDesktopBuildArchitectureError,
   MacPasskeySigningConfigurationResolutionError,
   MacDeveloperIdSigningConfigurationError,
+  InvalidDesktopProductNameError,
   MissingMacPasskeyProvisioningProfileError,
   packWindowsServerAsar,
   preflightWindowsDesktopBuild,
@@ -1593,7 +1594,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       const upstream = yield* resolve({});
       assert.equal(upstream.macSigning, "passkeys");
-      assert.equal(upstream.updatePolicy, "default");
+      assert.isUndefined(upstream.productName);
       assert.isUndefined(upstream.prepackaged);
 
       const unsigned = yield* Effect.flip(
@@ -1612,20 +1613,90 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(autoDiscovered.reason, "missing-identity");
 
       const developerId = yield* resolve(
-        { updatePolicy: Option.some("forward-only") },
+        {},
         {
           T3CODE_DESKTOP_MAC_SIGNING: "developer-id",
           CSC_NAME: "0123456789ABCDEF0123456789ABCDEF01234567",
         },
       );
       assert.equal(developerId.macSigning, "developer-id");
-      assert.equal(developerId.updatePolicy, "forward-only");
 
       const resigned = yield* Effect.flip(
         resolve({ prepackaged: Option.some("release/T3 Code (Nightly).app") }),
       );
       assert.instanceOf(resigned, PrepackagedMacAppError);
       assert.equal(resigned.reason, "signed");
+    }),
+  );
+
+  it.effect(
+    "names the app from an explicit product name and keeps the channel name otherwise",
+    () =>
+      Effect.gen(function* () {
+        const named = yield* createBuildConfig(
+          "mac",
+          "dmg",
+          "0.1.3-nightly.20261026.2",
+          false,
+          false,
+          undefined,
+          undefined,
+          false,
+          "arm64",
+          "T3 Code (Luxe)",
+        );
+        assert.equal(named.productName, "T3 Code (Luxe)");
+        assert.equal(
+          (named.dmg as Record<string, unknown>).title,
+          "T3 Code (Luxe) 0.1.3-nightly.20261026.2 Installer",
+        );
+        assert.equal(named.artifactName, "T3-Code-${version}-${arch}.${ext}");
+
+        const upstream = yield* createBuildConfig(
+          "mac",
+          "dmg",
+          "0.1.3-nightly.20261026.2",
+          false,
+          false,
+          undefined,
+          undefined,
+          false,
+          "arm64",
+        );
+        assert.equal(upstream.productName, "T3 Code (Nightly)");
+        assert.equal(
+          (upstream.dmg as Record<string, unknown>).title,
+          "T3 Code (Nightly) 0.1.3-nightly.20261026.2 Installer",
+        );
+      }),
+  );
+
+  it.effect("accepts a product name only when it is a valid app file name", () =>
+    Effect.gen(function* () {
+      const input = {
+        platform: Option.some("mac" as const),
+        target: Option.none(),
+        arch: Option.some("arm64" as const),
+        buildVersion: Option.none(),
+        outputDir: Option.none(),
+        skipBuild: Option.none(),
+        keepStage: Option.none(),
+        signed: Option.none(),
+        verbose: Option.none(),
+        mockUpdates: Option.none(),
+        mockUpdateServerPort: Option.none(),
+        wslRuntime: Option.none(),
+      };
+      const resolve = (env: Record<string, string>) =>
+        resolveBuildOptions(input).pipe(
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+        );
+
+      const named = yield* resolve({ T3CODE_DESKTOP_PRODUCT_NAME: "  T3 Code (Luxe) " });
+      assert.equal(named.productName, "T3 Code (Luxe)");
+
+      const invalid = yield* Effect.flip(resolve({ T3CODE_DESKTOP_PRODUCT_NAME: "T3/Code" }));
+      assert.instanceOf(invalid, InvalidDesktopProductNameError);
     }),
   );
 

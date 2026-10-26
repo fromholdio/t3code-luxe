@@ -60,6 +60,25 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("names the native app from the packaged display name, keeping web branding", () =>
+    Effect.gen(function* () {
+      const named = yield* makeEnvironment({
+        appVersion: "0.1.3-nightly.20261026.2",
+        isPackaged: true,
+        displayName: "T3 Code (Luxe)",
+      });
+      assert.equal(named.displayName, "T3 Code (Luxe)");
+      assert.equal(named.branding.displayName, "T3 Code (Nightly)");
+      assert.equal(named.branding.stageLabel, "Nightly");
+
+      const upstream = yield* makeEnvironment({
+        appVersion: "0.1.3-nightly.20261026.2",
+        isPackaged: true,
+      });
+      assert.equal(upstream.displayName, "T3 Code (Nightly)");
+    }),
+  );
+
   it.effect("keeps implicit development state separate from production state", () =>
     Effect.gen(function* () {
       const development = yield* makeEnvironment(
