@@ -44,6 +44,8 @@ const configuredDesktopUpdateRepository =
   process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
   process.env.GITHUB_REPOSITORY?.trim() ||
   "";
+// Replaces only the sidebar pill's "Nightly" text, for builds that rename the app.
+const configuredNightlyPillLabel = process.env.T3CODE_NIGHTLY_PILL_LABEL?.trim() || "";
 const configuredHostedAppUrl = (() => {
   const explicitHostedAppUrl = process.env.VITE_HOSTED_APP_URL?.trim();
   if (explicitHostedAppUrl) {
@@ -167,6 +169,23 @@ function devCompressionPlugin(): Plugin {
   };
 }
 
+// Release builds log this marker only after the emitted bundle is seen carrying the label.
+function nightlyPillLabelPlugin(label: string): Plugin {
+  const literals = [JSON.stringify(label), `'${label}'`, `\`${label}\``];
+  return {
+    name: "t3code:nightly-pill-label",
+    apply: "build",
+    writeBundle(_options, bundle) {
+      const carried = Object.values(bundle).some(
+        (output) =>
+          output.type === "chunk" && literals.some((literal) => output.code.includes(literal)),
+      );
+      if (!carried) this.error(`T3CODE_NIGHTLY_PILL_LABEL=${label} is missing from the bundle`);
+      this.info(`T3CODE_NIGHTLY_PILL_LABEL applied: ${label}`);
+    },
+  };
+}
+
 // Allow Tailnet hosts for sharing; Tailscale-controlled DNS prevents attacker rebinding.
 const configuredAllowedHosts = (process.env.T3CODE_DEV_ALLOWED_HOSTS ?? "")
   .split(",")
@@ -188,6 +207,7 @@ export default defineConfig(() => {
     assetsInclude: ["**/*.wasm"],
     plugins: [
       devCompressionPlugin(),
+      configuredNightlyPillLabel ? nightlyPillLabelPlugin(configuredNightlyPillLabel) : undefined,
       builtDev
         ? undefined
         : thirdPartyLicensesPlugin({
@@ -237,6 +257,7 @@ export default defineConfig(() => {
       "import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY": JSON.stringify(
         configuredDesktopUpdateRepository,
       ),
+      "import.meta.env.T3CODE_NIGHTLY_PILL_LABEL": JSON.stringify(configuredNightlyPillLabel),
       "import.meta.env.APP_VERSION": JSON.stringify(configuredAppVersion),
     },
     resolve: {
