@@ -495,6 +495,7 @@ const layerScheduledTasks = ScheduledTaskService.layer.pipe(
     }),
   ),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+  Layer.provide(ManagedPolicy.layerTest()),
   Layer.provide(
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
       namedProjectsRoot: "/projects",

@@ -485,6 +485,7 @@ it.effect("launches an unbound automation with its stored provider options", () 
         NodeCrypto.layer,
         Scheduler.layer,
         Layer.mock(SecretRequests.SecretRequests)({}),
+        ManagedPolicy.layerTest(),
       ),
     ),
   );
@@ -538,6 +539,7 @@ it.effect(
           NodeCrypto.layer,
           Scheduler.layer,
           Layer.mock(SecretRequests.SecretRequests)({}),
+          ManagedPolicy.layerTest(),
         ),
       ),
     );
