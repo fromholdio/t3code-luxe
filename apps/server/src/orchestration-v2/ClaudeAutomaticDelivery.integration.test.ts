@@ -524,7 +524,7 @@ it.effect("opens Claude with the effort a thread-bound scheduled run takes from 
         attachmentsDir: cwd,
         fileSystem: yield* FileSystem.FileSystem,
         path: yield* Path.Path,
-        crypto: yield* Crypto.Crypto,
+        random: yield* SecureRandom.SecureRandom,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         queryRunner: {
           allocateSessionId: Effect.succeed(sessionId),
@@ -605,7 +605,12 @@ it.effect("opens Claude with the effort a thread-bound scheduled run takes from 
       );
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   ),
