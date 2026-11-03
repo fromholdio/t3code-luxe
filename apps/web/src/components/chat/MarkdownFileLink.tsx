@@ -41,6 +41,7 @@ interface MarkdownFileLinkProps {
   resolveCopyPaths: () => Promise<ReturnType<typeof markdownFileCopyPaths>>;
   openInEditorMenuLabel: string;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
+  onOpenInSystemBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onOpenMedia?: (() => void) | undefined;
   onReveal?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   revealLabel?: string | undefined;
@@ -64,6 +65,7 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   onOpenInPanel,
   openInEditorMenuLabel,
   onOpenInBrowser,
+  onOpenInSystemBrowser,
   onOpenMedia,
   onReveal,
   revealLabel,
@@ -155,6 +157,30 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
         );
       }
     })();
+  };
+
+  const handleOpenInSystemBrowser = () => {
+    if (!onOpenInSystemBrowser) return;
+    const fail = (cause: unknown, error: unknown) => {
+      reportMarkdownActionFailure(
+        { operation: "open-file-in-system-browser", target: targetPath },
+        cause,
+      );
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to open file in system browser",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+    };
+    void onOpenInSystemBrowser().then(
+      (result) => {
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+        fail(result.cause, squashAtomCommandFailure(result));
+      },
+      (cause: unknown) => fail(cause, cause),
+    );
   };
 
   const handleRevealInFileManager = () => {
@@ -254,6 +280,9 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
           ...(onOpenInBrowser
             ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
             : []),
+          ...(onOpenInSystemBrowser
+            ? ([{ id: "open-in-system-browser", label: "Open in system browser" }] as const)
+            : []),
           ...(onReveal && revealLabel ? ([{ id: "reveal", label: revealLabel }] as const) : []),
           ...copyItems.map(({ id, label }) => ({ id, label })),
         ] as const,
@@ -270,6 +299,10 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
       }
       if (clicked === "open-in-browser") {
         handleOpenInBrowser();
+        return;
+      }
+      if (clicked === "open-in-system-browser") {
+        handleOpenInSystemBrowser();
         return;
       }
       if (clicked === "reveal") {
@@ -407,6 +440,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.onOpenInPanel === next.onOpenInPanel &&
     previous.openInEditorMenuLabel === next.openInEditorMenuLabel &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
+    previous.onOpenInSystemBrowser === next.onOpenInSystemBrowser &&
     previous.onOpenMedia === next.onOpenMedia &&
     previous.onReveal === next.onReveal &&
     previous.resolveCopyPaths === next.resolveCopyPaths &&

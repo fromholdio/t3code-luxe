@@ -60,3 +60,7 @@ export function shouldUseMarkdownFileBrowserPrimaryAction(input: {
       (!input.canOpenInEditor && !input.canOpenInPanel))
   );
 }
+
+export function isSystemBrowserHtmlFile(path: string): boolean {
+  return /\.html?$/i.test(path.split(/[?#]/, 1)[0] ?? "");
+}

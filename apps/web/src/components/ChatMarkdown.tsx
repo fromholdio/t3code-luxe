@@ -205,7 +205,10 @@ import {
 } from "./chat/ChatMarkdownMedia";
 import { MarkdownExternalLinkContent } from "./chat/MarkdownExternalLink";
 import { MarkdownFileLink } from "./chat/MarkdownFileLink";
-import { canUseMarkdownFileShellActions } from "./chat/MarkdownFileLink.logic";
+import {
+  canUseMarkdownFileShellActions,
+  isSystemBrowserHtmlFile,
+} from "./chat/MarkdownFileLink.logic";
 import { rehypeChipPunctuation } from "./chat/markdownChipPunctuation";
 import { handleMarkdownFragmentClick, rehypeHeadingIds } from "./chat/markdownFragments";
 import { rehypeTextDirection } from "./chat/markdownTextDirection";
@@ -886,6 +889,18 @@ function useChatMarkdownState({
           isPreviewAvailableFor(threadRef.environmentId) &&
           isBrowserPreviewFile(fileLinkMeta.filePath)
             ? () => openMarkdownFileInPreview(fileLinkMeta.filePath)
+            : undefined
+        }
+        onOpenInSystemBrowser={
+          canUseShellActions &&
+          environmentId !== null &&
+          availableEditors.includes("file-manager") &&
+          isSystemBrowserHtmlFile(fileLinkMeta.filePath)
+            ? async () =>
+                openInEditor({
+                  environmentId,
+                  input: { cwd: (await resolveHostPath()).absolutePath, editor: "file-manager" },
+                })
             : undefined
         }
       />
