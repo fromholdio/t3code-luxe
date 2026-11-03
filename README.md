@@ -1,5 +1,18 @@
 # T3 Code
 
+> [!IMPORTANT]
+> **T3 Code Luxe is an unofficial fork of [T3 Code](https://github.com/pingdotgg/t3code), the original project by the T3 team.**
+>
+> It's also a personal project, built around one person's daily use. You're welcome to use it, but it comes with no support, roadmap or promise of stability.
+>
+> We do not maintain, own, or manage T3 Code. Because upstream moves fast, things here can break, lag behind, or change without notice. For the supported, maintained product, use **[T3 Code](https://github.com/pingdotgg/t3code)**.
+>
+> Luxe follows upstream nightlies and adds a small set of changes:
+>
+> - **Scheduled task effort options:** scheduled tasks can set reasoning effort and service tier.
+> - **Delegate check-ins:** when you ask for periodic check-ins, a scheduled task can supervise running delegates instead of being blocked from polling them.
+> - **Open HTML in the system browser:** right-clicking an HTML file chip in chat can open it in your default browser.
+
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 
 Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, and Google Antigravity. If they're set up on your computer, T3 Code can control them.
