@@ -251,6 +251,8 @@ interface ChatMarkdownProps {
   /** Loads media a source control host keeps behind a credential through the server, which holds
       `cwd`'s; without it a private repository's uploads load unauthenticated and 404. */
   sourceControlMedia?: boolean | undefined;
+  /** The change request's repository, when it can differ from the checkout at `cwd`. */
+  sourceControlMediaRepository?: string | undefined;
   headingLevelOffset?: number | undefined;
 }
 
@@ -497,6 +499,7 @@ function useChatMarkdownState({
   renderContextReference,
   headingLevelOffset = 0,
   sourceControlMedia = false,
+  sourceControlMediaRepository,
 }: ChatMarkdownProps) {
   const resolvedTheme = useRenderedAppearance();
   const markdownRef = useRef<HTMLElement>(null);
@@ -906,6 +909,7 @@ function useChatMarkdownState({
     expandMedia,
     fileLinkChip,
     sourceControlMedia,
+    sourceControlMediaRepository,
     renderContextReference,
     headingLevelOffset,
     imageBaseDir,
@@ -1380,6 +1384,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       cwd,
       environmentId,
       sourceControlMedia,
+      sourceControlMediaRepository,
       imageBaseDir,
       threadRef,
       workspaceMutationId,
@@ -1466,7 +1471,12 @@ const CHAT_MARKDOWN_COMPONENTS = {
       return (
         <ChatMarkdownAssetImage
           environmentId={environmentId}
-          resource={{ _tag: SOURCE_CONTROL_MEDIA_ASSET, cwd, url: hostMediaUrl }}
+          resource={{
+            _tag: SOURCE_CONTROL_MEDIA_ASSET,
+            cwd,
+            url: hostMediaUrl,
+            ...(sourceControlMediaRepository ? { repository: sourceControlMediaRepository } : {}),
+          }}
           alt={altText}
           kind={kind}
           copyMarkdown={copyMarkdown}

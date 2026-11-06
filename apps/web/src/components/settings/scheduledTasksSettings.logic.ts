@@ -5,8 +5,10 @@ import {
   type ProjectId,
   ScheduledTaskId,
   type ScheduledTask,
+  type ScheduledTaskThreadMode,
   type ScheduledTaskUpsertSchedule,
   type ModelCapabilities,
+  scheduledTaskThreadMode,
   type ModelSelection,
   type ProviderOptionSelection,
   type RuntimeMode,
@@ -77,6 +79,7 @@ export interface DraftState {
   readonly weekdays: ReadonlySet<number>;
   readonly projectId: string;
   readonly threadId: string;
+  readonly threadMode: ScheduledTaskThreadMode;
   readonly workspaceMode: WorkspaceMode;
   readonly baseRef: string;
   readonly startFromOrigin: boolean;
@@ -263,6 +266,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     weekdays,
     projectId: task.projectId,
     threadId: task.threadId ?? "",
+    threadMode: scheduledTaskThreadMode(task),
     workspaceMode: task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
     startFromOrigin:
