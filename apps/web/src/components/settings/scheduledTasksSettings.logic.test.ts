@@ -25,6 +25,7 @@ import {
   modelOptionResetNotice,
   reconcileModelOptions,
   scheduleFromDraft,
+  scheduledTaskDraftIsBound,
   scheduledTaskSaveSelection,
   taskToDraft,
 } from "./scheduledTasksSettings.logic";
@@ -479,5 +480,14 @@ describe("scheduled task model options", () => {
       }),
     ).toBe(storedTask.modelSelection);
     expect(scheduledTaskSaveSelection(draft, null)).toBe(storedTask.modelSelection);
+  });
+
+  it("saves the picked selection when a thread-bound task switches to a new thread each run", () => {
+    const bound = taskToDraft({ ...storedTask, threadId: ThreadId.make("thread") });
+    expect(scheduledTaskDraftIsBound(bound)).toBe(true);
+    const draft = { ...bound, threadMode: "new_thread" as const };
+    expect(scheduledTaskDraftIsBound(draft)).toBe(false);
+    const picked = { instanceId: ProviderInstanceId.make("claude"), model: "claude-opus" };
+    expect(scheduledTaskSaveSelection(draft, picked)).toEqual(picked);
   });
 });

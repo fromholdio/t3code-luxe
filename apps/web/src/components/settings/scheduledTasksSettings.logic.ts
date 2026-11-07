@@ -384,11 +384,18 @@ export function modelOptionResetNotice(resets: ReadonlyArray<ModelOptionReset>):
     .join("; ")}.`;
 }
 
+/** Runs follow the bound thread's model, so the task's own selection is unused. */
+export function scheduledTaskDraftIsBound(
+  draft: Pick<DraftState, "threadId" | "threadMode">,
+): boolean {
+  return draft.threadId !== "" && draft.threadMode !== "new_thread";
+}
+
 export function scheduledTaskSaveSelection(
-  draft: Pick<DraftState, "threadId" | "baseModelSelection">,
+  draft: Pick<DraftState, "threadId" | "threadMode" | "baseModelSelection">,
   selection: ModelSelection | null,
 ): ModelSelection | null {
-  if (draft.threadId && draft.baseModelSelection) return draft.baseModelSelection;
+  if (scheduledTaskDraftIsBound(draft) && draft.baseModelSelection) return draft.baseModelSelection;
   return (
     selection && createModelSelection(selection.instanceId, selection.model, selection.options)
   );

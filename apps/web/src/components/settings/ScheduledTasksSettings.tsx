@@ -98,6 +98,7 @@ import {
   reconcileModelOptions,
   scheduleFromDraft,
   scheduledTaskDefaultModel,
+  scheduledTaskDraftIsBound,
   scheduledTaskSaveSelection,
   taskToDraft,
   type DraftState,
@@ -1672,7 +1673,7 @@ function ScheduledTaskEditorForm({
           </Field>
 
           <Field label="Model">
-            {draft.threadId ? (
+            {scheduledTaskDraftIsBound(draft) ? (
               <p className="text-sm text-muted-foreground">
                 Runs use the bound thread's current model and options.
               </p>
