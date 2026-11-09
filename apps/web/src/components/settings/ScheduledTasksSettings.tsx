@@ -50,7 +50,7 @@ import {
 
 import { formatRelativeTime } from "../../timestampFormat";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import { getCustomModelOptionsByInstance, selectsPlanAgent } from "../../modelSelection";
 import { getProviderModelCapabilities } from "../../providerModels";
 import { createModelSelection } from "@t3tools/shared/model";
 import { providerInstanceEntriesFor } from "../../providerInstances";
@@ -1454,7 +1454,7 @@ function ScheduledTaskEditorForm({
           entry.models,
           model,
           entry.driverKind,
-          settings.planModeEnabled,
+          selectsPlanAgent(activeSelection?.options),
         )
       : null;
   };
@@ -1838,7 +1838,7 @@ function ScheduledTaskEditorForm({
                     model={activeModel}
                     modelOptions={activeSelection.options ?? []}
                     allowPromptInjectedEffort={false}
-                    planModeEnabled={settings.planModeEnabled}
+                    includePlanAgent={selectsPlanAgent(activeSelection.options)}
                     disabled={saving || !connected}
                     triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                     onModelOptionsChange={(options) =>
