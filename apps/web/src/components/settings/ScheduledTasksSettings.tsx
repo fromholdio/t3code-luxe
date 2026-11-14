@@ -1197,6 +1197,16 @@ const THREAD_MODE_LABELS: Record<ScheduledTaskThreadMode, string> = {
   fresh_session: "One thread, fresh session each run",
 };
 
+function useScheduledTaskThread(environmentId: EnvironmentId, threadId: ThreadId | null) {
+  const ref = threadId === null ? null : scopeThreadRef(environmentId, threadId);
+  const shell = useThreadShell(ref);
+  // The shell can omit older settled threads; their family read still carries the row.
+  const family = useEnvironmentQuery(
+    ref !== null && shell === null ? threadFamilies.familyAtom(environmentId, ref.threadId) : null,
+  );
+  return shell ?? family.data?.threads.find((row) => row.id === threadId) ?? null;
+}
+
 function ScheduledTaskDestination({
   environmentId,
   projectId,
@@ -1218,12 +1228,7 @@ function ScheduledTaskDestination({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = threadId === null ? null : scopeThreadRef(environmentId, threadId);
-  const shell = useThreadShell(ref);
-  // The shell can omit older settled threads; their family read still carries the title.
-  const family = useEnvironmentQuery(
-    ref !== null && shell === null ? threadFamilies.familyAtom(environmentId, ref.threadId) : null,
-  );
-  const thread = shell ?? family.data?.threads.find((row) => row.id === threadId);
+  const thread = useScheduledTaskThread(environmentId, threadId);
   const currentLabel =
     ref !== null
       ? thread?.title.trim() || `Thread ${ref.threadId}`
@@ -1449,11 +1454,21 @@ function ScheduledTaskEditorForm({
         )
       : null;
   };
+  const boundThread = useScheduledTaskThread(
+    environmentId,
+    draft.threadId ? (draft.threadId as ThreadId) : null,
+  );
+  // Bound runs use the thread's current model, so the locked picker shows that one.
+  const shownSelection = draft.threadId
+    ? (boundThread?.modelSelection ?? null)
+    : { instanceId: activeInstanceId, model: activeModel };
+  const shownInstanceId = shownSelection?.instanceId ?? activeInstanceId;
+  const shownModel = shownSelection?.model ?? "";
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     providers,
-    activeInstanceId,
-    activeModel,
+    shownInstanceId,
+    shownModel,
   );
 
   const reportFailure = (title: string, error: unknown) => {
@@ -1792,58 +1807,52 @@ function ScheduledTaskEditorForm({
           </Field>
 
           <Field label="Model">
-            {scheduledTaskDraftIsBound(draft) ? (
-              <p className="text-sm text-muted-foreground">
-                Runs use the bound thread's current model and options.
-              </p>
-            ) : (
-              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                <ProviderModelPicker
-                  environmentId={environmentId}
-                  disabled={saving || !connected}
-                  activeInstanceId={activeInstanceId}
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <ProviderModelPicker
+                environmentId={environmentId}
+                disabled={saving || !connected || scheduledTaskDraftIsBound(draft)}
+                activeInstanceId={shownInstanceId}
+                model={shownModel}
+                lockedProvider={null}
+                instanceEntries={instanceEntries}
+                modelOptionsByInstance={modelOptionsByInstance}
+                isComposerOwned={false}
+                triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                onInstanceModelChange={(instanceId, model) => {
+                  const { options, resets } = reconcileModelOptions({
+                    options: activeSelection?.options,
+                    previousCaps: modelCaps(activeInstanceId, activeModel),
+                    nextCaps: modelCaps(instanceId, model),
+                  });
+                  setDraft((current) => ({
+                    ...current,
+                    modelKey: `${instanceId}:${model}`,
+                    modelOptions: options,
+                    modelOptionsNotice: modelOptionResetNotice(resets),
+                  }));
+                }}
+              />
+              {!scheduledTaskDraftIsBound(draft) && activeSelection && activeEntry ? (
+                <TraitsPicker
+                  provider={activeEntry.driverKind}
+                  models={activeEntry.models}
                   model={activeModel}
-                  lockedProvider={null}
-                  instanceEntries={instanceEntries}
-                  modelOptionsByInstance={modelOptionsByInstance}
-                  isComposerOwned={false}
+                  modelOptions={activeSelection.options ?? []}
+                  allowPromptInjectedEffort={false}
+                  includePlanAgent={selectsPlanAgent(activeSelection.options)}
+                  disabled={saving || !connected}
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                  onInstanceModelChange={(instanceId, model) => {
-                    const { options, resets } = reconcileModelOptions({
-                      options: activeSelection?.options,
-                      previousCaps: modelCaps(activeInstanceId, activeModel),
-                      nextCaps: modelCaps(instanceId, model),
-                    });
+                  onModelOptionsChange={(options) =>
                     setDraft((current) => ({
                       ...current,
-                      modelKey: `${instanceId}:${model}`,
+                      modelKey: `${activeInstanceId}:${activeModel}`,
                       modelOptions: options,
-                      modelOptionsNotice: modelOptionResetNotice(resets),
-                    }));
-                  }}
+                      modelOptionsNotice: null,
+                    }))
+                  }
                 />
-                {activeSelection && activeEntry ? (
-                  <TraitsPicker
-                    provider={activeEntry.driverKind}
-                    models={activeEntry.models}
-                    model={activeModel}
-                    modelOptions={activeSelection.options ?? []}
-                    allowPromptInjectedEffort={false}
-                    includePlanAgent={selectsPlanAgent(activeSelection.options)}
-                    disabled={saving || !connected}
-                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                    onModelOptionsChange={(options) =>
-                      setDraft((current) => ({
-                        ...current,
-                        modelKey: `${activeInstanceId}:${activeModel}`,
-                        modelOptions: options,
-                        modelOptionsNotice: null,
-                      }))
-                    }
-                  />
-                ) : null}
-              </div>
-            )}
+              ) : null}
+            </div>
             {draft.modelOptionsNotice ? (
               <p className="text-xs text-muted-foreground" role="status">
                 {draft.modelOptionsNotice}
