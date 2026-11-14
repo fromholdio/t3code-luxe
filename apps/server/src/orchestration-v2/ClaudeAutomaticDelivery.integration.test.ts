@@ -932,6 +932,7 @@ it.effect("opens Claude with the effort a thread-bound scheduled run takes from 
                 messages: Stream.never,
                 offer: () => Effect.void,
                 setModel: () => Effect.void,
+                renameSession: () => Effect.void,
                 applyFlagSettings: () => Effect.void,
                 setPermissionMode: () => Effect.void,
                 backgroundTasks: () => Effect.succeed(false),
