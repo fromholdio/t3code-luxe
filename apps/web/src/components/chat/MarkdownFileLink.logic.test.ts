@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { isSystemBrowserHtmlFile } from "./MarkdownFileLink.logic";
+import {
+  isSystemBrowserHtmlFile,
+  shouldUseMarkdownFileBrowserPrimaryAction,
+} from "./MarkdownFileLink.logic";
 
 describe("isSystemBrowserHtmlFile", () => {
   it("accepts HTML files, including a query or fragment", () => {
@@ -14,4 +17,28 @@ describe("isSystemBrowserHtmlFile", () => {
     expect(isSystemBrowserHtmlFile("/tmp/report.html.md")).toBe(false);
     expect(isSystemBrowserHtmlFile("/tmp/html")).toBe(false);
   });
+});
+
+it("opens PDFs in the file panel and uses the browser only when no other destination exists", () => {
+  expect(
+    shouldUseMarkdownFileBrowserPrimaryAction({
+      canOpenInEditor: true,
+      canOpenInBrowser: true,
+      canOpenInPanel: true,
+    }),
+  ).toBe(false);
+  expect(
+    shouldUseMarkdownFileBrowserPrimaryAction({
+      canOpenInEditor: false,
+      canOpenInBrowser: true,
+      canOpenInPanel: true,
+    }),
+  ).toBe(false);
+  expect(
+    shouldUseMarkdownFileBrowserPrimaryAction({
+      canOpenInEditor: false,
+      canOpenInBrowser: true,
+      canOpenInPanel: false,
+    }),
+  ).toBe(true);
 });
