@@ -499,12 +499,12 @@ describe("scheduled task model options", () => {
 
   it("loads stored options and saves them with the picked model for unbound tasks", () => {
     const draft = taskToDraft(storedTask);
-    expect(draft.modelOptions).toEqual(options);
+    expect(draft.modelSelection?.options).toEqual(options);
     expect(
       scheduledTaskSaveSelection(draft, {
         instanceId: codex,
         model: "gpt-5.5",
-        options: draft.modelOptions!,
+        options: draft.modelSelection!.options!,
       }),
     ).toEqual({ instanceId: codex, model: "gpt-5.5", options });
     expect(scheduledTaskSaveSelection(draft, { instanceId: codex, model: "gpt-5.5" })).toEqual({

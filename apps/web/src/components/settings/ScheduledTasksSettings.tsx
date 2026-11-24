@@ -18,7 +18,6 @@ import {
 import { type ReactNode, useRef, useState } from "react";
 import type {
   EnvironmentId,
-  ModelSelection,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
   ScheduledTask,
@@ -207,11 +206,10 @@ const EMPTY_DRAFT: DraftState = {
   baseRef: "",
   startFromOrigin: true,
   existingWorktreePath: "",
-  modelKey: "",
+  modelSelection: null,
   runtimeMode: "full-access",
   interactionMode: "default",
   baseModelSelection: null,
-  modelOptions: undefined,
   modelOptionsNotice: null,
   signatureEnabled: false,
   ...WEBHOOK_SIGNATURE_DEFAULTS,
@@ -349,15 +347,6 @@ function Field({
       {children}
     </div>
   );
-}
-
-function splitModelKey(value: string): ModelSelection | null {
-  const index = value.indexOf(":");
-  if (index <= 0 || index === value.length - 1) return null;
-  return {
-    instanceId: ProviderInstanceId.make(value.slice(0, index)),
-    model: value.slice(index + 1),
-  };
 }
 
 /** formatRelativeTime handles only the past; upcoming runs need future labels. */
@@ -1572,11 +1561,11 @@ function ScheduledTaskEditorForm({
   );
 
   const firstInstance = instanceEntries[0];
-  const draftSelection = draft.modelKey ? splitModelKey(draft.modelKey) : null;
+  const draftSelection = draft.modelSelection;
   const activeSelection =
     draftSelection &&
     instanceEntries.some((entry) => entry.instanceId === draftSelection.instanceId && entry.enabled)
-      ? createModelSelection(draftSelection.instanceId, draftSelection.model, draft.modelOptions)
+      ? draftSelection
       : scheduledTaskDefaultModel(settings, selectedProject ?? null, instanceEntries);
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
@@ -1764,9 +1753,8 @@ function ScheduledTaskEditorForm({
                 setDraft((current) => ({
                   ...unbindDraftFromThread(current),
                   projectId: defaultScheduledTaskProjectId(projectsOn(next.environmentId), scope),
-                  modelKey: "",
+                  modelSelection: null,
                   baseModelSelection: null,
-                  modelOptions: undefined,
                   modelOptionsNotice: null,
                   baseRef: "",
                   startFromOrigin: true,
@@ -1981,6 +1969,8 @@ function ScheduledTaskEditorForm({
                 isComposerOwned={false}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                 onInstanceModelChange={(instanceId, model) => {
+                  if (instanceId === activeSelection?.instanceId && model === activeSelection.model)
+                    return;
                   const { options, resets } = reconcileModelOptions({
                     options: activeSelection?.options,
                     previousCaps: modelCaps(activeInstanceId, activeModel),
@@ -1988,8 +1978,7 @@ function ScheduledTaskEditorForm({
                   });
                   setDraft((current) => ({
                     ...current,
-                    modelKey: `${instanceId}:${model}`,
-                    modelOptions: options,
+                    modelSelection: createModelSelection(instanceId, model, options),
                     modelOptionsNotice: modelOptionResetNotice(resets),
                   }));
                 }}
@@ -2007,8 +1996,7 @@ function ScheduledTaskEditorForm({
                   onModelOptionsChange={(options) =>
                     setDraft((current) => ({
                       ...current,
-                      modelKey: `${activeInstanceId}:${activeModel}`,
-                      modelOptions: options,
+                      modelSelection: createModelSelection(activeInstanceId, activeModel, options),
                       modelOptionsNotice: null,
                     }))
                   }

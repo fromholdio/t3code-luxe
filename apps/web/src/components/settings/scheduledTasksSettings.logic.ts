@@ -143,12 +143,11 @@ export interface DraftState {
   readonly baseRef: string;
   readonly startFromOrigin: boolean;
   readonly existingWorktreePath: string;
-  readonly modelKey: string;
+  readonly modelSelection: ModelSelection | null;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   /** The stored selection, saved unchanged for thread-bound tasks. */
   readonly baseModelSelection: ModelSelection | null;
-  readonly modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
   readonly modelOptionsNotice: string | null;
   readonly signatureEnabled: boolean;
   readonly signatureHeader: string;
@@ -353,11 +352,10 @@ export function taskToDraft(task: ScheduledTask): DraftState {
       task.workspaceStrategy.type === "existing_worktree"
         ? task.workspaceStrategy.worktreePath
         : "",
-    modelKey: `${task.modelSelection.instanceId}:${task.modelSelection.model}`,
+    modelSelection: task.modelSelection,
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     baseModelSelection: task.modelSelection,
-    modelOptions: task.modelSelection.options,
     modelOptionsNotice: null,
     ...(schedule.type === "webhook" && schedule.signature !== null
       ? {
